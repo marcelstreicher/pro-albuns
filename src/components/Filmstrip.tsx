@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useProjectStore, type MediaItem } from '../store/useProjectStore';
 import ConfirmDialog from './ConfirmDialog';
 
@@ -12,6 +12,9 @@ const Filmstrip: React.FC = () => {
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
   const [lastSelectedPath, setLastSelectedPath] = useState<string | null>(null);
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
+  
+  // External Drag State
+  const [isDragOverExternal, setIsDragOverExternal] = useState(false);
   
   // Lasso State
   const [lassoBox, setLassoBox] = useState<{ x: number, y: number, w: number, h: number } | null>(null);
@@ -139,6 +142,52 @@ const Filmstrip: React.FC = () => {
     }
   };
 
+  const handleExternalDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOverExternal(false);
+
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length === 0) return;
+
+    // Filter only images
+    const imageFiles = files.filter(f => f.type.startsWith('image/'));
+    if (imageFiles.length === 0) return;
+
+    const { addMedia, showToast } = useProjectStore.getState();
+    showToast(`Processando ${imageFiles.length} foto(s)...`, 'info');
+
+    const mediaItems = await Promise.all(
+      imageFiles.map((file) => new Promise<MediaItem>((resolve) => {
+        // In Electron, File objects have a 'path' property
+        const filePath = (file as any).path || URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => {
+          let aspect: 'H'|'V'|'S' = 'S';
+          if (img.width > img.height * 1.1) aspect = 'H';
+          else if (img.height > img.width * 1.1) aspect = 'V';
+          resolve({ path: filePath, aspect });
+        };
+        img.onerror = () => resolve({ path: filePath, aspect: 'H' });
+        img.src = filePath;
+      }))
+    );
+
+    addMedia(mediaItems);
+    showToast(`${mediaItems.length} foto(s) adicionada(s) com sucesso.`, 'success');
+  };
+
+  // Media Usage Calculation
+  const mediaUsage = useMemo(() => {
+    const counts: Record<string, number> = {};
+    useProjectStore.getState().spreads.forEach(spread => {
+      Object.values(spread.images).forEach(img => {
+        counts[img.path] = (counts[img.path] || 0) + 1;
+      });
+    });
+    return counts;
+  }, [useProjectStore.getState().spreads]);
+
   return (
     <div 
       tabIndex={0}
@@ -147,7 +196,16 @@ const Filmstrip: React.FC = () => {
             setIsConfirmOpen(true);
          }
       }}
-      className="bg-surface-container-low border-t border-outline-variant/10 flex flex-col relative focus:outline-none"
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.dataTransfer.types.includes('Files')) {
+          setIsDragOverExternal(true);
+        }
+      }}
+      onDragLeave={() => setIsDragOverExternal(false)}
+      onDrop={handleExternalDrop}
+      className={`bg-surface-container-low border-t transition-all flex flex-col relative focus:outline-none ${isDragOverExternal ? 'border-primary bg-primary/5 ring-4 ring-inset ring-primary/20' : 'border-outline-variant/10'}`}
       style={{ height: `${height}px`, minHeight: '100px' }}
     >
       <ConfirmDialog 
@@ -169,7 +227,12 @@ const Filmstrip: React.FC = () => {
       />
       
       <div className="px-6 py-2 flex justify-between items-center shrink-0">
-        <span className="text-[10px] uppercase tracking-widest text-on-surface-variant font-medium">Project Media ({media.length} Photos) {selectedPaths.length > 0 && `- ${selectedPaths.length} Selecionadas`}</span>
+        <div className="flex items-center gap-3">
+          <span className={`text-[10px] uppercase tracking-widest font-bold transition-all ${isDragOverExternal ? 'text-primary scale-110' : 'text-on-surface-variant'}`}>
+            {isDragOverExternal ? 'Solte para importar fotos' : `Project Media (${media.length} Photos)`}
+          </span>
+          {selectedPaths.length > 0 && <span className="text-[10px] text-primary font-bold uppercase tracking-widest">{selectedPaths.length} Selecionadas</span>}
+        </div>
         <div className="flex gap-4">
           {selectedPaths.length > 0 && (
             <button onClick={() => setIsConfirmOpen(true)} className="material-symbols-outlined text-sm text-error hover:text-red-400" title="Excluir Seleção">delete</button>
@@ -193,23 +256,43 @@ const Filmstrip: React.FC = () => {
            />
         )}
         <div className="flex flex-wrap gap-3">
-        {media.map((image, index) => (
-          <div 
-            key={index}
-            draggable
-            data-path={image.path}
-            onClick={(e) => handlePhotoClick(e, image.path)}
-            onDragStart={(e) => handleDragStart(e, image)}
-            className={`filmstrip-item h-20 rounded overflow-hidden shrink-0 transition-all cursor-grab active:cursor-grabbing border-4 flex items-center justify-center ${selectedPaths.includes(image.path) ? 'border-primary grayscale-0 opacity-100 shadow-lg scale-[1.05] z-10 relative' : 'bg-surface-container-highest border-transparent grayscale opacity-60 hover:grayscale-0 hover:opacity-100 hover:border-primary/50'}`}
-          >
-            <img className="h-full w-auto object-contain pointer-events-none" src={image.path}/>
-            {selectedPaths.includes(image.path) && (
-               <div className="absolute top-1 right-1 w-4 h-4 rounded-full bg-primary flex items-center justify-center">
-                  <span className="material-symbols-outlined text-white text-[10px] font-bold">check</span>
-               </div>
-            )}
-          </div>
-        ))}
+        {media.map((image, index) => {
+          const usageCount = mediaUsage[image.path] || 0;
+          const isSelected = selectedPaths.includes(image.path);
+          
+          return (
+            <div 
+              key={index}
+              draggable
+              data-path={image.path}
+              onClick={(e) => handlePhotoClick(e, image.path)}
+              onDragStart={(e) => handleDragStart(e, image)}
+              className={`filmstrip-item h-20 rounded overflow-hidden shrink-0 transition-all cursor-grab active:cursor-grabbing border-4 flex items-center justify-center relative
+                ${isSelected 
+                  ? 'border-primary grayscale-0 opacity-100 shadow-lg scale-[1.05] z-10' 
+                  : (usageCount > 0 
+                      ? 'bg-surface-container-highest border-transparent grayscale opacity-50 hover:opacity-80 hover:grayscale-0' 
+                      : 'bg-surface-container border-transparent grayscale-0 opacity-100 hover:border-primary/50')
+                }`}
+            >
+              <img className="h-full w-auto object-contain pointer-events-none" src={image.path}/>
+              
+              {/* Usage Badge */}
+              {usageCount > 0 && (
+                <div className="absolute top-1 left-1 bg-surface-container-highest/90 text-on-surface px-1.5 py-0.5 rounded-full text-[8px] font-bold border border-outline-variant/30 flex items-center gap-0.5 shadow-sm">
+                  <span className="material-symbols-outlined text-[10px]">done_all</span>
+                  {usageCount}
+                </div>
+              )}
+
+              {isSelected && (
+                 <div className="absolute top-1 right-1 w-4 h-4 rounded-full bg-primary flex items-center justify-center shadow-md">
+                    <span className="material-symbols-outlined text-white text-[10px] font-bold">check</span>
+                 </div>
+              )}
+            </div>
+          );
+        })}
         {media.length === 0 && (
           <div className="text-xs text-on-surface-variant italic w-full pointer-events-none">Import media to start arranging spreads.</div>
         )}

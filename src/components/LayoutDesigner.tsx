@@ -51,7 +51,7 @@ const LayoutDesigner: React.FC = () => {
 
   useEffect(() => () => { if (toastTimeout.current) clearTimeout(toastTimeout.current); }, []);
 
-  const spreadRatio = (albumConfig.pageWidth * 2) / albumConfig.pageHeight;
+  const spreadRatio = (albumConfig.spreadWidth / (albumConfig.spreadHeight || 1)) || 2;
 
   useEffect(() => {
     const state = useProjectStore.getState();
@@ -169,8 +169,8 @@ const LayoutDesigner: React.FC = () => {
          targetsY.push(0, 50, 100);
       }
 
-      const spreadW = (albumConfig.pageWidth * 2) / 10;
-      const spreadH = albumConfig.pageHeight / 10;
+      const spreadW = (albumConfig.spreadWidth || 600) / 10;
+      const spreadH = (albumConfig.spreadHeight || 300) / 10;
       const pGapX = (gapCm / spreadW) * 100;
       const pGapY = (gapCm / spreadH) * 100;
 
@@ -432,9 +432,9 @@ const LayoutDesigner: React.FC = () => {
              className="bg-surface-container-high text-xs text-on-surface p-2 rounded border border-outline-variant/20 outline-none hover:border-primary transition-colors cursor-pointer"
              onChange={(e) => {
                const val = e.target.value;
-               if(val === 'square') setAlbumConfig({ pageWidth: 300, pageHeight: 300 });
-               if(val === 'landscape') setAlbumConfig({ pageWidth: 300, pageHeight: 200 });
-               if(val === 'portrait') setAlbumConfig({ pageWidth: 200, pageHeight: 300 });
+               if(val === 'square') setAlbumConfig({ spreadWidth: 600, spreadHeight: 300 });
+               if(val === 'landscape') setAlbumConfig({ spreadWidth: 600, spreadHeight: 200 });
+               if(val === 'portrait') setAlbumConfig({ spreadWidth: 400, spreadHeight: 300 });
              }}
           >
              <option value="square">Square Format</option>
@@ -712,8 +712,8 @@ const LayoutDesigner: React.FC = () => {
              const ph = placeholders.find(p => p.id === selectedId);
              if (!ph) return null;
              
-             const spreadW = (albumConfig.pageWidth * 2) / 10;
-             const spreadH = albumConfig.pageHeight / 10;
+             const spreadW = (albumConfig.spreadWidth || 600) / 10;
+             const spreadH = (albumConfig.spreadHeight || 300) / 10;
              
              const widthCm = (ph.width / 100) * spreadW;
              const heightCm = (ph.height / 100) * spreadH;

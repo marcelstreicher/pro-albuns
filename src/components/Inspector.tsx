@@ -3,8 +3,10 @@ import { useProjectStore } from '../store/useProjectStore';
 import { layoutsDictionary } from '../utils/layouts';
 
 // Clamp crop offset so image always covers the placeholder
-function clampOffset(offset: number, scale: number): number {
-  const maxOffset = ((scale - 1) / 2) * 100;
+// Scale 1 = object-cover. If aspect ratios don't match, there's always an overflow.
+// Allowing some base overflow movement even at scale 1.
+function clampOffset(offset: number, scale: number, extraRange: number = 0): number {
+  const maxOffset = (((scale - 1) / 2) * 100) + extraRange;
   return Math.max(-maxOffset, Math.min(maxOffset, offset));
 }
 
@@ -16,9 +18,59 @@ interface InspectorProps {
 const Inspector: React.FC<InspectorProps> = ({ selectedPlaceholder, onCropChange }) => {
   const {
     albumConfig, spreads, activeSpreadIndex,
-    setSpreadLayout, setAlbumConfig, customLayouts, updatePhotoCrop
+    setSpreadLayout, setAlbumConfig, customLayouts, updatePhotoCrop,
+    binderies, albumTemplates
   } = useProjectStore();
   const activeSpread = spreads[activeSpreadIndex];
+
+  // Calculate Aspect Ratio of the selected Placeholder
+  const phAspect = useMemo(() => {
+    if (!selectedPlaceholder || !activeSpread) return 1.5; // fallback
+    const allLayouts = { ...layoutsDictionary, ...customLayouts };
+    const layout = allLayouts[activeSpread.layoutId];
+    const ph = layout?.placeholders.find(p => p.id === selectedPlaceholder);
+    if (!ph) return 1.5;
+    
+    // Width in mm
+    // Height in mm
+    const w = (albumConfig.spreadWidth || 600) * (ph.width / 100);
+    const h = (albumConfig.spreadHeight || 300) * (ph.height / 100);
+    if (!w || !h) return 1.5;
+    return w / h;
+  }, [selectedPlaceholder, activeSpread, albumConfig, customLayouts]);
+
+  // Image Aspect Ratio discovery (real-time from img load)
+  const [detectedImgAspect, setDetectedImgAspect] = useState<number | null>(null);
+
+  const imgAspect = useMemo(() => {
+    if (detectedImgAspect) return detectedImgAspect;
+    const img = selectedPlaceholder ? activeSpread?.images[selectedPlaceholder] : null;
+    if (!img) return 1.5;
+    if (img.aspect === 'V') return 0.66;
+    return 1.5;
+  }, [selectedPlaceholder, activeSpread, detectedImgAspect]);
+
+  // Extra range allowed even at scale 1 (pan overflow)
+  const extraRange = useMemo(() => {
+    if (imgAspect > phAspect) {
+      // Image is wider than box -> allow horizontal pan
+      return { x: ((imgAspect / phAspect - 1) / 2) * 100, y: 0 };
+    } else {
+      // Image is taller than box -> allow vertical pan
+      return { x: 0, y: ((phAspect / imgAspect - 1) / 2) * 100 };
+    }
+  }, [imgAspect, phAspect]);
+
+  const selectedImage = selectedPlaceholder ? activeSpread.images[selectedPlaceholder] : null;
+
+  // Handle image load to get actual dimensions
+  const onImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
+    const { naturalWidth, naturalHeight } = e.currentTarget;
+    if (naturalWidth && naturalHeight) setDetectedImgAspect(naturalWidth / naturalHeight);
+  };
+  
+  // Reset detected aspect when image changes
+  useEffect(() => { setDetectedImgAspect(null); }, [selectedImage?.path]);
 
   // Local crop state (syncs from selected placeholder image)
   const [cropState, setCropState] = useState({ cropX: 0, cropY: 0, cropScale: 1 });
@@ -50,11 +102,10 @@ const Inspector: React.FC<InspectorProps> = ({ selectedPlaceholder, onCropChange
     const onMove = (e: MouseEvent) => {
       if (!isDragging.current || !dragStart.current || !thumbRef.current) return;
       const rect = thumbRef.current.getBoundingClientRect();
-      // Thumbnail is smaller so movement is amplified for better control
       const dx = ((e.clientX - dragStart.current.mx) / rect.width) * 100;
       const dy = ((e.clientY - dragStart.current.my) / rect.height) * 100;
-      const newX = clampOffset(dragStart.current.cropX + dx, cropState.cropScale);
-      const newY = clampOffset(dragStart.current.cropY + dy, cropState.cropScale);
+      const newX = clampOffset(dragStart.current.cropX + dx, cropState.cropScale, extraRange.x);
+      const newY = clampOffset(dragStart.current.cropY + dy, cropState.cropScale, extraRange.y);
       setCropState(prev => ({ ...prev, cropX: newX, cropY: newY }));
     };
     const onUp = () => {
@@ -83,13 +134,19 @@ const Inspector: React.FC<InspectorProps> = ({ selectedPlaceholder, onCropChange
   const currentPhotoCount = Object.keys(activeSpread.images).length;
   const suggestedCounts = currentPhotoCount > 0 ? [currentPhotoCount] : [1, 2, 3, 4, 5];
 
-  const selectedImage = selectedPlaceholder ? activeSpread.images[selectedPlaceholder] : null;
-
   const handleFormatChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const format = e.target.value;
-    if (format === 'square-30') setAlbumConfig({ name: 'Square 30x30 Album', pageWidth: 300, pageHeight: 300 });
-    else if (format === 'landscape-30x20') setAlbumConfig({ name: 'Landscape 30x20 Album', pageWidth: 300, pageHeight: 200 });
-    else if (format === 'portrait-20x30') setAlbumConfig({ name: 'Portrait 20x30 Album', pageWidth: 200, pageHeight: 300 });
+    const templateId = e.target.value;
+    const template = albumTemplates.find(t => t.id === templateId);
+    if (template) {
+      setAlbumConfig({ 
+        name: template.name, 
+        spreadWidth: template.spreadWidth, 
+        spreadHeight: template.spreadHeight,
+        bleed: template.bleed,
+        templateId: template.id,
+        binderyId: template.binderyId
+      });
+    }
   };
 
   return (
@@ -104,13 +161,72 @@ const Inspector: React.FC<InspectorProps> = ({ selectedPlaceholder, onCropChange
         <select
           className="w-full bg-surface-container-high text-xs text-on-surface p-2 rounded border border-outline-variant/20 outline-none focus:border-primary"
           onChange={handleFormatChange}
-          value={albumConfig.pageWidth === 300 && albumConfig.pageHeight === 300 ? 'square-30' :
-                 albumConfig.pageWidth === 300 && albumConfig.pageHeight === 200 ? 'landscape-30x20' : 'portrait-20x30'}
+          value={albumConfig.templateId || ''}
         >
-          <option value="square-30">Quadrado — 30×30 cm</option>
-          <option value="landscape-30x20">Paisagem — 30×20 cm</option>
-          <option value="portrait-20x30">Retrato — 20×30 cm</option>
+          {!albumConfig.templateId && <option value="">Customizado — {albumConfig.spreadWidth}×{albumConfig.spreadHeight}mm</option>}
+          {binderies.map(b => (
+            <optgroup key={b.id} label={b.name}>
+              {albumTemplates.filter(t => t.binderyId === b.id).map(t => (
+                <option key={t.id} value={t.id}>
+                  {t.name} ({t.spreadWidth}×{t.spreadHeight}mm)
+                </option>
+              ))}
+            </optgroup>
+          ))}
         </select>
+
+        {/* ── Frame Style ─────────────────────────── */}
+        <div className="mt-4 pt-4 border-t border-outline-variant/10">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-[9px] uppercase font-bold text-on-surface-variant tracking-widest">Molduras</span>
+            <button
+              onClick={() => setAlbumConfig({ useBorder: !albumConfig.useBorder })}
+              className={`relative inline-flex h-4 w-8 items-center rounded-full transition-colors focus:outline-none ${albumConfig.useBorder ? 'bg-primary' : 'bg-surface-container-highest'}`}
+            >
+              <span className={`inline-block h-2.5 w-2.5 transform rounded-full bg-white transition-transform ${albumConfig.useBorder ? 'translate-x-4' : 'translate-x-1.5'}`} />
+            </button>
+          </div>
+
+          {albumConfig.useBorder && (
+            <div className="space-y-3 animate-in fade-in slide-in-from-top-1 duration-200">
+              {/* Width */}
+              <div>
+                <div className="flex justify-between text-[8px] uppercase text-on-surface-variant mb-1">
+                  <span>Espessura</span>
+                  <span className="font-mono text-on-surface">{albumConfig.borderWidth}mm</span>
+                </div>
+                <input
+                  type="range" min="0.5" max="5" step="0.1"
+                  value={albumConfig.borderWidth || 1}
+                  className="w-full accent-primary h-1"
+                  onChange={e => setAlbumConfig({ borderWidth: parseFloat(e.target.value) })}
+                />
+              </div>
+              
+              {/* Color */}
+              <div className="flex items-center justify-between">
+                <span className="text-[8px] uppercase text-on-surface-variant">Cor</span>
+                <div className="flex gap-1.5">
+                  {['#ffffff', '#000000', '#f4f4f4', '#333333'].map(color => (
+                    <button
+                      key={color}
+                      onClick={() => setAlbumConfig({ borderColor: color })}
+                      className={`w-4 h-4 rounded-full border border-outline-variant/30 transition-transform hover:scale-110 ${albumConfig.borderColor === color ? 'ring-2 ring-primary ring-offset-2 ring-offset-surface' : ''}`}
+                      style={{ backgroundColor: color }}
+                    />
+                  ))}
+                  <input
+                    type="color"
+                    value={albumConfig.borderColor || '#ffffff'}
+                    onChange={e => setAlbumConfig({ borderColor: e.target.value })}
+                    className="w-4 h-4 rounded-full bg-transparent overflow-hidden cursor-pointer border border-outline-variant/30 block"
+                    style={{ padding: 0 }}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* ── Layout Gallery ─────────────────────────── */}
@@ -171,32 +287,52 @@ const Inspector: React.FC<InspectorProps> = ({ selectedPlaceholder, onCropChange
               <span className="material-symbols-outlined text-sm text-on-surface-variant">tune</span>
             </h4>
 
-            {/* Photo thumbnail + drag-to-pan */}
-            <div className="mb-4">
-              <label className="text-[9px] uppercase tracking-widest text-on-surface-variant block mb-1.5">
-                Posição — Arraste para enquadrar
-              </label>
-              <div
-                ref={thumbRef}
-                onMouseDown={handleThumbMouseDown}
-                className="w-full aspect-[16/9] rounded overflow-hidden bg-surface-container cursor-grab active:cursor-grabbing relative border border-outline-variant/20"
-                style={{ userSelect: 'none' }}
-              >
-                <img
-                  src={selectedImage.path}
-                  draggable={false}
-                  className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-                  style={{
-                    transformOrigin: 'center',
-                    transform: `translate(${cropState.cropX}%, ${cropState.cropY}%) scale(${cropState.cropScale})`,
-                    transition: isDragging.current ? 'none' : 'transform 0.1s',
-                  }}
-                />
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                  <div className="border-2 border-white/60 rounded-sm w-[60%] h-[60%] shadow-[0_0_0_9999px_rgba(0,0,0,0.35)]"></div>
+                  {/* Photo thumbnail + drag-to-pan */}
+              <div className="mb-4">
+                <label className="text-[9px] uppercase tracking-widest text-on-surface-variant block mb-1.5">
+                  Posição — Arraste para enquadrar
+                </label>
+                <div
+                  className="w-full aspect-[16/9] rounded overflow-hidden bg-surface-container-high relative border border-outline-variant/20 flex items-center justify-center p-2"
+                  style={{ userSelect: 'none' }}
+                >
+                  {/* The Viewport: This matches the placeholder aspect ratio exactly */}
+                  <div 
+                    ref={thumbRef}
+                    onMouseDown={handleThumbMouseDown}
+                    className="relative shadow-2xl overflow-hidden bg-black/20 cursor-grab active:cursor-grabbing border border-white/20"
+                    style={{
+                      width: phAspect > (16/9) ? '100.1%' : `${100 * (phAspect / (16/9))}%`,
+                      height: phAspect > (16/9) ? `${100 * ((16/9) / phAspect)}%` : '100.1%',
+                      aspectRatio: phAspect,
+                    }}
+                  >
+                    <img
+                      src={selectedImage.path}
+                      onLoad={onImageLoad}
+                      draggable={false}
+                      className="absolute inset-0 w-full h-full object-cover pointer-events-none select-none"
+                      style={{
+                        transformOrigin: 'center',
+                        transform: `translate(${cropState.cropX}%, ${cropState.cropY}%) scale(${cropState.cropScale})`,
+                        transition: isDragging.current ? 'none' : 'transform 0.1s',
+                      }}
+                    />
+                    
+                    {/* Grid overlay for alignment assistance */}
+                    <div className="absolute inset-0 pointer-events-none opacity-20 border-white/20 grid grid-cols-3 grid-rows-3">
+                      <div className="border-r border-b"></div><div className="border-r border-b"></div><div className="border-b"></div>
+                      <div className="border-r border-b"></div><div className="border-r border-b"></div><div className="border-b"></div>
+                      <div className="border-r"></div><div className="border-r"></div><div></div>
+                    </div>
+                  </div>
+
+                  {/* Visual hint that it is a mini-preview of the canvas */}
+                  <div className="absolute top-1 right-1 px-1.5 bg-black/40 rounded text-[7px] text-white/60 uppercase tracking-tighter">
+                    Preview
+                  </div>
                 </div>
               </div>
-            </div>
 
             {/* Scale slider */}
             <div>
@@ -213,8 +349,8 @@ const Inspector: React.FC<InspectorProps> = ({ selectedPlaceholder, onCropChange
                 className="w-full accent-primary"
                 onChange={(e) => {
                   const newScale = parseFloat(e.target.value);
-                  const newX = clampOffset(cropState.cropX, newScale);
-                  const newY = clampOffset(cropState.cropY, newScale);
+                  const newX = clampOffset(cropState.cropX, newScale, extraRange.x);
+                  const newY = clampOffset(cropState.cropY, newScale, extraRange.y);
                   setCropState({ cropScale: newScale, cropX: newX, cropY: newY });
                 }}
                 onMouseUp={() => commitCrop(cropState.cropX, cropState.cropY, cropState.cropScale)}

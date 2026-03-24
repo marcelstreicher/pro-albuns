@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useProjectStore, type MediaItem } from '../store/useProjectStore';
 import { layoutsDictionary } from '../utils/layouts';
 
@@ -6,19 +6,31 @@ interface CanvasProps {
   selectedPlaceholder: string | null;
   onSelectPlaceholder: (id: string | null) => void;
   canvasZoom: number;
+  setCanvasZoom: React.Dispatch<React.SetStateAction<number>>;
 }
 
-const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholder, canvasZoom }) => {
+const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholder, canvasZoom, setCanvasZoom }) => {
   const {
     albumConfig, spreads, activeSpreadIndex,
     addPhotoToPlaceholder, removePhotoFromPlaceholder,
-    customLayouts, addPhotosToSpread, showToast
+    customLayouts, addPhotosToSpread, showToast,
+    swapPhotos, setActiveSpread
   } = useProjectStore();
   const activeSpread = spreads[activeSpreadIndex];
 
   const [dragOverPlaceholder, setDragOverPlaceholder] = useState<string | null>(null);
   // cropMode = double-clicked placeholder where user can drag-pan directly on canvas
   const [cropModePlaceholder, setCropModePlaceholder] = useState<string | null>(null);
+
+  // Image Aspect Ratio discovery (real-time from img load)
+  const [detectedImgAspects, setDetectedImgAspects] = useState<Record<string, number>>({});
+
+  const onImageLoad = (placeholderId: string, e: React.SyntheticEvent<HTMLImageElement>) => {
+    const { naturalWidth, naturalHeight } = e.currentTarget;
+    if (naturalWidth && naturalHeight) {
+      setDetectedImgAspects(prev => ({ ...prev, [placeholderId]: naturalWidth / naturalHeight }));
+    }
+  };
 
   // Canvas-level drag-to-pan state (only when in cropMode)
   const isDraggingCrop = useRef(false);
@@ -29,14 +41,48 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
   const allLayouts = activeSpread ? { ...layoutsDictionary, ...customLayouts } : {};
   const layout = activeSpread ? allLayouts[activeSpread.layoutId] : undefined;
 
+  // Calculate Aspect Ratio of the active placeholder
+  const phAspect = useMemo(() => {
+    const phId = cropModePlaceholder || selectedPlaceholder;
+    if (!phId || !activeSpread || !layout) return 1.5;
+    const ph = layout.placeholders.find(p => p.id === phId);
+    if (!ph) return 1.5;
+    const w = (albumConfig.spreadWidth || 600) * (ph.width / 100);
+    const h = (albumConfig.spreadHeight || 300) * (ph.height / 100);
+    if (!w || !h) return 1.5;
+    return w / h;
+  }, [cropModePlaceholder, selectedPlaceholder, activeSpread, layout, albumConfig]);
+
+  const imgAspect = useMemo(() => {
+    const phId = cropModePlaceholder || selectedPlaceholder;
+    if (phId && detectedImgAspects[phId]) return detectedImgAspects[phId];
+    
+    const img = phId ? activeSpread?.images[phId] : null;
+    if (!img) return 1.5;
+    if (img.aspect === 'V') return 0.66;
+    return 1.5;
+  }, [cropModePlaceholder, selectedPlaceholder, activeSpread, detectedImgAspects]);
+
+  const extraRange = useMemo(() => {
+    if (imgAspect > phAspect) return { x: ((imgAspect / phAspect - 1) / 2) * 100, y: 0 };
+    return { x: 0, y: ((phAspect / imgAspect - 1) / 2) * 100 };
+  }, [imgAspect, phAspect]);
+
   const photoCount = activeSpread ? Object.keys(activeSpread.images).length : 0;
   const matchingLayouts = Object.values(allLayouts).filter(l => l.photoCount === photoCount);
   const currentLayoutIndex = matchingLayouts.findIndex(l => l.id === activeSpread?.layoutId);
 
-  function clampOffset(offset: number, scale: number) {
-    const max = ((scale - 1) / 2) * 100;
+  function clampOffset(offset: number, scale: number, extra: number = 0) {
+    const max = (((scale - 1) / 2) * 100) + extra;
     return Math.max(-max, Math.min(max, offset));
   }
+
+  // Safety: Reset index if out of bounds (e.g. after template change or migration)
+  useEffect(() => {
+    if (spreads.length > 0 && activeSpreadIndex >= spreads.length) {
+      setActiveSpread(spreads.length - 1);
+    }
+  }, [spreads.length, activeSpreadIndex, setActiveSpread]);
 
   // Sync liveCanvasCrop when cropMode changes
   useEffect(() => {
@@ -60,8 +106,8 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
       const rect = phRef.current.getBoundingClientRect();
       const dx = ((e.clientX - cropDragStart.current.mx) / rect.width) * 100;
       const dy = ((e.clientY - cropDragStart.current.my) / rect.height) * 100;
-      const newX = clampOffset(cropDragStart.current.cropX + dx, liveCanvasCrop.cropScale);
-      const newY = clampOffset(cropDragStart.current.cropY + dy, liveCanvasCrop.cropScale);
+      const newX = clampOffset(cropDragStart.current.cropX + dx, liveCanvasCrop.cropScale, extraRange.x);
+      const newY = clampOffset(cropDragStart.current.cropY + dy, liveCanvasCrop.cropScale, extraRange.y);
       setLiveCanvasCrop(prev => prev ? { ...prev, cropX: newX, cropY: newY } : null);
     };
     const onUp = () => {
@@ -110,7 +156,7 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
 
   if (!activeSpread) return <div className="flex-1 canvas-grid flex items-center justify-center">No active spread</div>;
 
-  const spreadRatio = (albumConfig.pageWidth * 2) / albumConfig.pageHeight;
+  const spreadRatio = (albumConfig.spreadWidth / (albumConfig.spreadHeight || 1)) || 2;
 
   const handleDragOver = (e: React.DragEvent, placeholderId: string) => {
     e.preventDefault(); e.stopPropagation();
@@ -119,6 +165,17 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
   const handleDrop = (e: React.DragEvent, placeholderId: string) => {
     e.preventDefault(); e.stopPropagation();
     setDragOverPlaceholder(null);
+    
+    // 1. Internal swap
+    const sourcePhId = e.dataTransfer.getData('sourcePlaceholderId');
+    const sourceSpreadId = e.dataTransfer.getData('sourceSpreadId');
+    if (sourcePhId && sourceSpreadId === activeSpread?.id && sourcePhId !== placeholderId) {
+      swapPhotos(activeSpread.id, sourcePhId, placeholderId);
+      onSelectPlaceholder(placeholderId);
+      return;
+    }
+
+    // 2. Filmstrip drop
     const data = e.dataTransfer.getData('application/json');
     if (data && activeSpread) {
       try {
@@ -234,12 +291,20 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
                   e.stopPropagation();
                   if (image) { setCropModePlaceholder(ph.id); onSelectPlaceholder(ph.id); }
                 }}
-                style={{ left: `${ph.x}%`, top: `${ph.y}%`, width: `${ph.width}%`, height: `${ph.height}%` }}
-                className={`absolute overflow-hidden transition-all duration-150 border-2
-                  ${isCropMode ? 'border-secondary ring-4 ring-secondary/30 z-30 cursor-none' :
-                    isHovered ? 'border-primary/50 z-20' :
-                    isSelected ? 'border-primary ring-2 ring-primary/20 z-20' :
-                    'bg-surface-container-lowest border-black/5 cursor-pointer'}`}
+                style={{ 
+                  left: `${ph.x}%`, 
+                  top: `${ph.y}%`, 
+                  width: `${ph.width}%`, 
+                  height: `${ph.height}%`,
+                  ...(albumConfig.useBorder ? {
+                    border: `${(albumConfig.borderWidth || 1) * 2}px solid ${albumConfig.borderColor || '#ffffff'}`
+                  } : { border: 'none' })
+                }}
+                className={`absolute overflow-hidden transition-all duration-150
+                  ${isCropMode ? 'ring-4 ring-secondary/30 z-30 cursor-none border-secondary !border-2' :
+                    isHovered ? 'ring-4 ring-primary z-20 border-primary !border-2 scale-[1.02] shadow-2xl' :
+                    isSelected ? 'ring-2 ring-primary/20 z-20 border-primary !border-2' :
+                    'bg-surface-container-lowest cursor-pointer hover:border-outline-variant/50'}`}
               >
                 {image ? (
                   <>
@@ -247,6 +312,7 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
                       className="absolute inset-0 w-full h-full object-cover pointer-events-none select-none"
                       draggable={false}
                       src={image.path}
+                      onLoad={e => onImageLoad(ph.id, e)}
                       style={{
                         transformOrigin: 'center',
                         transform: `translate(${crop.cropX}%, ${crop.cropY}%) scale(${crop.cropScale})`,
@@ -281,6 +347,43 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
         {/* Spine */}
         <div className="absolute left-1/2 top-0 bottom-0 w-[2px] bg-gradient-to-r from-transparent via-black/15 to-transparent z-20 pointer-events-none"></div>
         <div className="absolute left-1/2 top-0 bottom-0 w-8 -translate-x-1/2 bg-gradient-to-r from-transparent via-white/30 to-transparent z-20 pointer-events-none mix-blend-overlay"></div>
+      </div>
+
+      {/* Canvas Zoom Control */}
+      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-30 flex items-center gap-3 px-4 py-2 bg-surface-container-high/90 backdrop-blur-xl border border-outline-variant/20 rounded-2xl shadow-2xl pointer-events-auto shadow-primary/5">
+        <button
+          onClick={(e) => { e.stopPropagation(); setCanvasZoom(z => Math.max(0.25, z - 0.1)); }}
+          className="w-7 h-7 flex items-center justify-center rounded-full text-on-surface-variant hover:bg-surface-variant transition-colors"
+          title="Reduzir zoom"
+        >
+          <span className="material-symbols-outlined text-lg">remove</span>
+        </button>
+        <div className="flex items-center px-1">
+          <input
+            type="range"
+            min="0.25"
+            max="2"
+            step="0.05"
+            value={canvasZoom}
+            className="w-24 h-1 bg-outline-variant/30 rounded-full appearance-none accent-primary cursor-pointer hover:accent-primary-container transition-all"
+            onChange={e => { e.stopPropagation(); setCanvasZoom(parseFloat(e.target.value)); }}
+            onClick={e => e.stopPropagation()}
+          />
+        </div>
+        <button
+          onClick={(e) => { e.stopPropagation(); setCanvasZoom(z => Math.min(2, z + 0.1)); }}
+          className="w-7 h-7 flex items-center justify-center rounded-full text-on-surface-variant hover:bg-surface-variant transition-colors"
+          title="Aumentar zoom"
+        >
+          <span className="material-symbols-outlined text-lg">add</span>
+        </button>
+        <button
+          onClick={(e) => { e.stopPropagation(); setCanvasZoom(1); }}
+          className="text-[10px] font-mono font-bold text-on-surface-variant hover:text-primary transition-colors min-w-[36px] text-center"
+          title="Resetar Zoom (100%)"
+        >
+          {(canvasZoom * 100).toFixed(0)}%
+        </button>
       </div>
     </div>
   );
