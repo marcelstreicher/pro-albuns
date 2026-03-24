@@ -16,9 +16,10 @@ const generateId = () => Math.random().toString(36).substr(2, 9);
 const SNAP_TOLERANCE = 1.5; // percent
 
 const LayoutDesigner: React.FC = () => {
-  const { albumConfig, setAlbumConfig } = useProjectStore();
+  const { albumConfig, setAlbumConfig, customLayouts } = useProjectStore();
   const [placeholders, setPlaceholders] = useState<DraftPlaceholder[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [editingPresetId, setEditingPresetId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, phId: string } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -38,7 +39,51 @@ const LayoutDesigner: React.FC = () => {
   const [gapCm, setGapCm] = useState(0.5);
   const [activeGaps, setActiveGaps] = useState<{ x: number, y: number, w: number, h: number, valCm: number }[]>([]);
 
+  // Toast notification
+  const [toast, setToast] = useState<{ message: string, type: 'success' | 'info' } | null>(null);
+  const toastTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'info' = 'success') => {
+    if (toastTimeout.current) clearTimeout(toastTimeout.current);
+    setToast({ message, type });
+    toastTimeout.current = setTimeout(() => setToast(null), 3500);
+  };
+
+  useEffect(() => () => { if (toastTimeout.current) clearTimeout(toastTimeout.current); }, []);
+
   const spreadRatio = (albumConfig.pageWidth * 2) / albumConfig.pageHeight;
+
+  useEffect(() => {
+    const state = useProjectStore.getState();
+    const pendingCount = state.layoutDesignerPendingCount;
+    if (pendingCount && pendingCount > 0) {
+      // Auto-generate N placeholders in a simple grid to bootstrap creation
+      const newPlaceholders: DraftPlaceholder[] = [];
+      const cols = Math.ceil(Math.sqrt(pendingCount));
+      const rows = Math.ceil(pendingCount / cols);
+      const cellW = 100 / cols;
+      const cellH = 100 / rows;
+      
+      let index = 0;
+      for (let r = 0; r < rows; r++) {
+         for (let c = 0; c < cols; c++) {
+            if (index >= pendingCount) break;
+            newPlaceholders.push({
+               id: generateId(),
+               x: c * cellW + 2,
+               y: r * cellH + 2,
+               width: cellW - 4,
+               height: cellH - 4,
+               proportionLock: 'custom'
+            });
+            index++;
+         }
+      }
+      
+      setPlaceholders(newPlaceholders);
+      useProjectStore.setState({ layoutDesignerPendingCount: null });
+    }
+  }, []);
 
   useEffect(() => {
     if (!isDragging || !startSnapshot || !containerRef.current) return;
@@ -340,18 +385,45 @@ const LayoutDesigner: React.FC = () => {
 
   const handleSavePreset = () => {
     if (placeholders.length === 0) return;
+    
+    if (editingPresetId) {
+       const existing = customLayouts[editingPresetId];
+       if (existing) {
+          const layoutConfig = {
+             ...existing,
+             photoCount: placeholders.length,
+             placeholders: placeholders.map(p => ({...p}))
+          };
+          useProjectStore.getState().saveCustomLayout(layoutConfig);
+          showToast(`Preset "${existing.name}" atualizado com sucesso!`);
+          return;
+       }
+    }
+
     const layoutConfig = {
       id: `custom_${generateId()}`,
-      name: `User Preset (${placeholders.length} Photos)`,
+      name: `Preset ${Object.keys(customLayouts).length + 1} (${placeholders.length} Fotos)`,
       photoCount: placeholders.length,
-      placeholders
+      placeholders: placeholders.map(p => ({...p}))
     };
     useProjectStore.getState().saveCustomLayout(layoutConfig);
-    alert(`Preset salvo com ${placeholders.length} photos! Você já pode usá-lo na Galeria de Layouts do Editor.`);
+    setEditingPresetId(layoutConfig.id);
+    showToast(`Novo preset salvo com ${placeholders.length} fotos! Uso liberado no Editor.`);
   };
 
   return (
     <div className="flex-1 flex flex-col bg-surface relative h-full">
+      {/* Toast Notification */}
+      {toast && (
+        <div className={`fixed bottom-8 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-3 px-5 py-3 rounded-xl shadow-2xl border backdrop-blur-xl pointer-events-none
+          ${toast.type === 'success' ? 'bg-surface-container-high border-primary/30 text-on-surface' : 'bg-surface-container-high border-outline-variant/30 text-on-surface'}`}
+        >
+          <span className={`material-symbols-outlined text-xl ${toast.type === 'success' ? 'text-primary' : 'text-on-surface-variant'}`}>
+            {toast.type === 'success' ? 'check_circle' : 'info'}
+          </span>
+          <span className="text-sm font-medium whitespace-nowrap">{toast.message}</span>
+        </div>
+      )}
       {/* Top Controls */}
       <div className="h-16 bg-surface-container-low border-b border-outline-variant/20 flex items-center justify-between px-8">
         <h2 className="text-on-surface font-headline font-bold text-sm uppercase tracking-widest">Layout Designer Studio</h2>
@@ -409,17 +481,99 @@ const LayoutDesigner: React.FC = () => {
             Delete Box
           </button>
           <div className="w-px h-6 bg-outline-variant/20 mx-2"></div>
-          <button 
-             onClick={handleSavePreset}
-             className="flex items-center gap-2 bg-primary text-on-primary hover:brightness-110 transition-all px-4 py-1.5 rounded font-bold text-xs uppercase shadow-lg shadow-primary/20"
-          >
-            <span className="material-symbols-outlined text-[16px]">save</span>
-            Save Preset to Gallery
-          </button>
+          <div className="flex items-center gap-4">
+             {placeholders.length > 0 && (
+                <button 
+                   onClick={() => {
+                      setPlaceholders([]);
+                      setEditingPresetId(null);
+                   }}
+                   className="text-xs font-bold text-on-surface hover:text-error uppercase tracking-wider transition-colors"
+                >
+                   Limpar Tela
+                </button>
+             )}
+             <button 
+                onClick={handleSavePreset}
+                className="flex items-center gap-2 bg-primary text-on-primary hover:brightness-110 transition-all px-4 py-1.5 rounded font-bold text-xs uppercase shadow-lg shadow-primary/20"
+             >
+               <span className="material-symbols-outlined text-[16px]">save</span>
+               {editingPresetId ? 'Atualizar Preset' : 'Salvar Novo'}
+             </button>
+          </div>
         </div>
       </div>
 
       <div className="flex-1 flex overflow-hidden">
+        {/* Saved Layouts Panel */}
+        <aside className="w-64 bg-surface-container-low border-r border-outline-variant/15 flex flex-col shrink-0 overflow-y-auto">
+          <div className="p-4 border-b border-outline-variant/10">
+             <h4 className="font-headline font-bold text-xs text-on-surface uppercase tracking-wider flex items-center gap-2">
+               <span className="material-symbols-outlined text-primary text-[16px]">view_quilt</span>
+               Meus Layouts
+             </h4>
+          </div>
+          <div className="p-4 flex flex-col gap-2">
+            <button 
+               onClick={() => {
+                  setPlaceholders([]);
+                  setEditingPresetId(null);
+                  setSelectedId(null);
+               }}
+               className="flex items-center justify-center gap-2 p-3 mb-2 rounded border border-dashed border-primary text-primary hover:bg-primary/10 transition-colors w-full font-bold text-xs uppercase"
+            >
+               <span className="material-symbols-outlined text-[16px]">add</span>
+               Novo Layout
+            </button>
+            
+            {Object.values(customLayouts).length === 0 ? (
+               <div className="text-center p-4 mt-6">
+                  <span className="material-symbols-outlined text-outline-variant/50 text-3xl mb-2">dashboard_customize</span>
+                  <p className="text-[10px] text-on-surface-variant">Nenhum layout salvo ainda!</p>
+               </div>
+            ) : Object.values(customLayouts).reverse().map(layout => (
+               <button 
+                  key={layout.id}
+                  onClick={() => {
+                     setPlaceholders(layout.placeholders.map(p => ({...p})));
+                     setEditingPresetId(layout.id);
+                     setSelectedId(null);
+                  }}
+                  className={`flex items-center gap-3 p-3 rounded border text-left cursor-pointer transition-colors overflow-hidden ${editingPresetId === layout.id ? 'bg-primary/10 border-primary text-primary' : 'bg-surface border-outline-variant/20 hover:border-primary/50 text-on-surface'}`}
+               >
+                  <div 
+                     className="w-16 shrink-0 bg-surface-container-high relative overflow-hidden ring-1 ring-outline-variant/20 shadow-inner group-hover:ring-primary/50 transition-all"
+                     style={{ aspectRatio: spreadRatio }}
+                  >
+                     {/* Center Spine in Thumbnail */}
+                     <div className="absolute left-1/2 top-0 bottom-0 w-px bg-outline-variant/20"></div>
+                     
+                     {layout.placeholders.map(ph => (
+                        <div 
+                           key={ph.id} 
+                           className="absolute border border-outline-variant/50 bg-outline-variant/10 shadow-sm"
+                           style={{
+                              left: `${ph.x}%`, 
+                              top: `${ph.y}%`, 
+                              width: `${ph.width}%`, 
+                              height: `${ph.height}%`
+                           }}
+                        />
+                     ))}
+                     {/* Badge for PhotoCount */}
+                     <div className="absolute bottom-0 right-0 bg-surface-container-highest text-on-surface-variant text-[8px] font-bold px-1 rounded-tl shadow border-l border-t border-outline-variant/20">
+                        {layout.photoCount}📸
+                     </div>
+                  </div>
+                  <div className="overflow-hidden flex-1">
+                     <div className="text-xs font-bold truncate">{layout.name}</div>
+                     <div className="text-[9px] opacity-70 truncate mt-0.5 font-mono" title={layout.id}>{layout.id}</div>
+                  </div>
+               </button>
+            ))}
+          </div>
+        </aside>
+
         {/* Designer Canvas */}
         <div 
           className="flex-1 bg-surface-container-lowest p-12 flex items-center justify-center overflow-auto relative"
