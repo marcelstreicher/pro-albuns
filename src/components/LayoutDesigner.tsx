@@ -31,9 +31,12 @@ const LayoutDesigner: React.FC = () => {
   // Snap lines state
   const [snapLines, setSnapLines] = useState<{ v?: number, h?: number, vEdges?: number[], hEdges?: number[] }>({});
   
+  type SnapMode = 'none' | 'page' | 'elements' | 'all';
+  const [snapMode, setSnapMode] = useState<SnapMode>('all');
+
   // Gap Magnetic State
   const [gapCm, setGapCm] = useState(0.5);
-  const [activeGaps, setActiveGaps] = useState<{ x: number, y: number, w: number, h: number }[]>([]);
+  const [activeGaps, setActiveGaps] = useState<{ x: number, y: number, w: number, h: number, valCm: number }[]>([]);
 
   const spreadRatio = (albumConfig.pageWidth * 2) / albumConfig.pageHeight;
 
@@ -113,30 +116,71 @@ const LayoutDesigner: React.FC = () => {
       const vEdges: number[] = [];
       const hEdges: number[] = [];
       
-      const targetsX = [0, 25, 50, 75, 100];
-      const targetsY = [0, 50, 100];
+      const targetsX: number[] = [];
+      const targetsY: number[] = [];
+
+      if (snapMode === 'page' || snapMode === 'all') {
+         targetsX.push(0, 25, 50, 75, 100);
+         targetsY.push(0, 50, 100);
+      }
 
       const spreadW = (albumConfig.pageWidth * 2) / 10;
       const spreadH = albumConfig.pageHeight / 10;
       const pGapX = (gapCm / spreadW) * 100;
       const pGapY = (gapCm / spreadH) * 100;
 
-      const gapSnapsX: { t: number, p: DraftPlaceholder, type: string }[] = [];
-      const gapSnapsY: { t: number, p: DraftPlaceholder, type: string }[] = [];
-      const newGaps: { x: number, y: number, w: number, h: number }[] = [];
+      const gapSnapsX: { t: number, p: DraftPlaceholder, type: string, val: number, valCm: number }[] = [];
+      const gapSnapsY: { t: number, p: DraftPlaceholder, type: string, val: number, valCm: number }[] = [];
+      const newGaps: { x: number, y: number, w: number, h: number, valCm: number }[] = [];
       
-      placeholders.forEach(p => {
-         if (p.id === startSnapshot.id) return;
-         targetsX.push(p.x, p.x + p.width, p.x + p.width/2);
-         targetsY.push(p.y, p.y + p.height, p.y + p.height/2);
-
-         if (gapCm > 0) {
-            gapSnapsX.push({ t: p.x - pGapX, p, type: 'left-of-p' });
-            gapSnapsX.push({ t: p.x + p.width + pGapX, p, type: 'right-of-p' });
-            gapSnapsY.push({ t: p.y - pGapY, p, type: 'top-of-p' });
-            gapSnapsY.push({ t: p.y + p.height + pGapY, p, type: 'bottom-of-p' });
+      if (snapMode === 'elements' || snapMode === 'all') {
+         const dynamicGapsCm = new Set<string>();
+         for (let i = 0; i < placeholders.length; i++) {
+            if (placeholders[i].id === startSnapshot.id) continue;
+            for (let j = i + 1; j < placeholders.length; j++) {
+               if (placeholders[j].id === startSnapshot.id) continue;
+               const A = placeholders[i];
+               const B = placeholders[j];
+               const dx1 = B.x - (A.x + A.width);
+               if (dx1 > 0 && dx1 < 50) dynamicGapsCm.add(((dx1 / 100) * spreadW).toFixed(2));
+               const dx2 = A.x - (B.x + B.width);
+               if (dx2 > 0 && dx2 < 50) dynamicGapsCm.add(((dx2 / 100) * spreadW).toFixed(2));
+               
+               const dy1 = B.y - (A.y + A.height);
+               if (dy1 > 0 && dy1 < 50) dynamicGapsCm.add(((dy1 / 100) * spreadH).toFixed(2));
+               const dy2 = A.y - (B.y + B.height);
+               if (dy2 > 0 && dy2 < 50) dynamicGapsCm.add(((dy2 / 100) * spreadH).toFixed(2));
+            }
          }
-      });
+
+         const allGapsX = [{ val: pGapX, valCm: gapCm }];
+         const allGapsY = [{ val: pGapY, valCm: gapCm }];
+         
+         dynamicGapsCm.forEach(gStr => {
+            const gCm = parseFloat(gStr);
+            if (gCm <= 0) return;
+            // Prevent duplicate of the default gap
+            if (Math.abs(gCm - gapCm) > 0.05) {
+               allGapsX.push({ val: (gCm / spreadW) * 100, valCm: gCm });
+               allGapsY.push({ val: (gCm / spreadH) * 100, valCm: gCm });
+            }
+         });
+
+         placeholders.forEach(p => {
+            if (p.id === startSnapshot.id) return;
+            targetsX.push(p.x, p.x + p.width, p.x + p.width/2);
+            targetsY.push(p.y, p.y + p.height, p.y + p.height/2);
+
+            for (const gx of allGapsX) {
+               gapSnapsX.push({ t: p.x - gx.val, p, type: 'left-of-p', val: gx.val, valCm: gx.valCm });
+               gapSnapsX.push({ t: p.x + p.width + gx.val, p, type: 'right-of-p', val: gx.val, valCm: gx.valCm });
+            }
+            for (const gy of allGapsY) {
+               gapSnapsY.push({ t: p.y - gy.val, p, type: 'top-of-p', val: gy.val, valCm: gy.valCm });
+               gapSnapsY.push({ t: p.y + p.height + gy.val, p, type: 'bottom-of-p', val: gy.val, valCm: gy.valCm });
+            }
+         });
+      }
 
       for (const t of targetsX) {
          if (dragType === 'move' || dragType.includes('w')) {
@@ -188,7 +232,7 @@ const LayoutDesigner: React.FC = () => {
              if (Math.abs(newX - gap.t) < SNAP_TOLERANCE) { 
                 if (dragType.includes('w')) newW += (newX - gap.t); 
                 newX = gap.t; 
-                newGaps.push({ x: gap.p.x + gap.p.width, y: newY + newH/2, w: pGapX, h: 0 });
+                newGaps.push({ x: gap.p.x + gap.p.width, y: newY + newH/2, w: gap.val, h: 0, valCm: gap.valCm });
                 break; 
              }
          }
@@ -196,7 +240,7 @@ const LayoutDesigner: React.FC = () => {
              if (Math.abs((newX + newW) - gap.t) < SNAP_TOLERANCE) { 
                 if (dragType === 'move') newX = gap.t - newW; 
                 else newW = gap.t - newX;
-                newGaps.push({ x: gap.t, y: newY + newH/2, w: pGapX, h: 0 });
+                newGaps.push({ x: gap.t, y: newY + newH/2, w: gap.val, h: 0, valCm: gap.valCm });
                 break; 
              }
          }
@@ -208,7 +252,7 @@ const LayoutDesigner: React.FC = () => {
              if (Math.abs(newY - gap.t) < SNAP_TOLERANCE) { 
                 if (dragType.includes('n')) newH += (newY - gap.t); 
                 newY = gap.t; 
-                newGaps.push({ x: newX + newW/2, y: gap.p.y + gap.p.height, w: 0, h: pGapY });
+                newGaps.push({ x: newX + newW/2, y: gap.p.y + gap.p.height, w: 0, h: gap.val, valCm: gap.valCm });
                 break; 
              }
          }
@@ -216,7 +260,7 @@ const LayoutDesigner: React.FC = () => {
              if (Math.abs((newY + newH) - gap.t) < SNAP_TOLERANCE) { 
                 if (dragType === 'move') newY = gap.t - newH; 
                 else newH = gap.t - newY;
-                newGaps.push({ x: newX + newW/2, y: gap.t, w: 0, h: pGapY });
+                newGaps.push({ x: newX + newW/2, y: gap.t, w: 0, h: gap.val, valCm: gap.valCm });
                 break; 
              }
          }
@@ -325,6 +369,19 @@ const LayoutDesigner: React.FC = () => {
              <option value="landscape">Landscape Format</option>
              <option value="portrait">Portrait Format</option>
           </select>
+          <div className="flex items-center gap-1 bg-surface-container-high border border-outline-variant/20 px-2 py-1.5 rounded" title="Modo Magnético (Snap)">
+             <span className="material-symbols-outlined text-[14px] text-on-surface-variant">magnet</span>
+             <select
+                value={snapMode}
+                onChange={(e) => setSnapMode(e.target.value as SnapMode)}
+                className="bg-transparent text-xs text-on-surface outline-none cursor-pointer"
+             >
+                <option value="none" className="bg-surface-container-high">Livre (Desativado)</option>
+                <option value="page" className="bg-surface-container-high">Só Guias da Página</option>
+                <option value="elements" className="bg-surface-container-high">Só Elementos</option>
+                <option value="all" className="bg-surface-container-high">Completo</option>
+             </select>
+          </div>
           <div className="flex items-center gap-1 bg-surface-container-high border border-outline-variant/20 px-2 py-1.5 rounded outline-none hover:border-primary transition-colors" title="Espaçamento Padrão entre Elementos">
              <span className="material-symbols-outlined text-[14px] text-on-surface-variant">space_bar</span>
              <input 
@@ -409,7 +466,7 @@ const LayoutDesigner: React.FC = () => {
                   >
                      <div className={g.w > 0 ? "h-px w-full bg-error" : "w-px h-full bg-error"} />
                      <div className={`absolute bg-error text-white text-[9px] font-mono px-1 py-0.5 rounded shadow whitespace-nowrap`}>
-                        {gapCm.toFixed(1)} cm
+                        {g.valCm.toFixed(1)} cm
                      </div>
                   </div>
               ))}
