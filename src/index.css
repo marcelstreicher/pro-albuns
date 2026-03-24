@@ -1,0 +1,47 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-surface text-on-surface font-body overflow-hidden h-screen flex flex-col;
+    font-family: 'Inter', sans-serif;
+  }
+}
+
+@layer utilities {
+  .material-symbols-outlined {
+    font-family: 'Material Symbols Outlined';
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+    display: inline-block;
+    line-height: 1;
+    text-transform: none;
+    letter-spacing: normal;
+    word-wrap: normal;
+    white-space: nowrap;
+    direction: ltr;
+  }
+  .glass-panel {
+    background: rgba(37, 38, 38, 0.7);
+    backdrop-filter: blur(20px);
+  }
+  .primary-gradient {
+    background: linear-gradient(135deg, #a9caeb 0%, #294965 100%);
+  }
+  .canvas-grid {
+    background-image: radial-gradient(circle, #484848 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+:root {
+  --primary: #a9caeb;
+  /* keep original css vars if needed */
+}
