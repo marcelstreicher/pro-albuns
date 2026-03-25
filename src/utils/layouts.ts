@@ -11,6 +11,7 @@ export interface LayoutTemplate {
   name: string;
   photoCount: number;
   placeholders: Placeholder[];
+  format?: 'square' | 'landscape' | 'portrait' | 'all';
 }
 
 export const layoutsDictionary: Record<string, LayoutTemplate> = {
@@ -20,7 +21,8 @@ export const layoutsDictionary: Record<string, LayoutTemplate> = {
     photoCount: 1,
     placeholders: [
       { id: 'p1', x: 2, y: 2, width: 96, height: 96 }
-    ]
+    ],
+    format: 'all'
   },
   
   // 1 Photo Layouts
@@ -30,7 +32,8 @@ export const layoutsDictionary: Record<string, LayoutTemplate> = {
     photoCount: 1,
     placeholders: [
       { id: 'p1', x: 0, y: 0, width: 100, height: 100 }
-    ]
+    ],
+    format: 'all'
   },
   '1-right-page': {
     id: '1-right-page',
@@ -57,7 +60,8 @@ export const layoutsDictionary: Record<string, LayoutTemplate> = {
     placeholders: [
       { id: 'p1', x: 2, y: 2, width: 47, height: 96 },
       { id: 'p2', x: 51, y: 2, width: 47, height: 96 }
-    ]
+    ],
+    format: 'all'
   },
   '2-vertical-stack': {
     id: '2-vertical-stack',
@@ -78,7 +82,8 @@ export const layoutsDictionary: Record<string, LayoutTemplate> = {
       { id: 'p1', x: 2, y: 2, width: 46, height: 96 }, // Left page
       { id: 'p2', x: 52, y: 2, width: 46, height: 46 }, // Right page top
       { id: 'p3', x: 52, y: 52, width: 46, height: 46 } // Right page bot
-    ]
+    ],
+    format: 'all'
   },
   '3-row': {
     id: '3-row',
@@ -101,7 +106,8 @@ export const layoutsDictionary: Record<string, LayoutTemplate> = {
       { id: 'p2', x: 52, y: 2, width: 46, height: 46 },
       { id: 'p3', x: 2, y: 52, width: 46, height: 46 },
       { id: 'p4', x: 52, y: 52, width: 46, height: 46 }
-    ]
+    ],
+    format: 'all'
   },
   
   // 5 Photos
@@ -115,6 +121,31 @@ export const layoutsDictionary: Record<string, LayoutTemplate> = {
       { id: 'p3', x: 75, y: 2, width: 23, height: 46 },
       { id: 'p4', x: 50, y: 52, width: 23, height: 46 },
       { id: 'p5', x: 75, y: 52, width: 23, height: 46 }
-    ]
+    ],
+    format: 'all'
+  },
+
+  // Specific Landscape Layouts
+  '2-landscape-strip': {
+    id: '2-landscape-strip',
+    name: 'Landscape Strip',
+    photoCount: 2,
+    placeholders: [
+      { id: 'p1', x: 2, y: 10, width: 46, height: 80 },
+      { id: 'p2', x: 52, y: 10, width: 46, height: 80 }
+    ],
+    format: 'landscape'
+  },
+
+  // Specific Portrait Layouts
+  '2-portrait-stack': {
+    id: '2-portrait-stack',
+    name: 'Portrait Stack',
+    photoCount: 2,
+    placeholders: [
+      { id: 'p1', x: 25, y: 2, width: 50, height: 46 },
+      { id: 'p2', x: 25, y: 52, width: 50, height: 46 }
+    ],
+    format: 'portrait'
   }
 };

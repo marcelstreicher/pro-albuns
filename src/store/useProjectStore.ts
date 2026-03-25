@@ -1,10 +1,13 @@
 import { create } from 'zustand';
 import { persist, devtools } from 'zustand/middleware';
-import { layoutsDictionary, type LayoutTemplate } from '../utils/layouts';
+import { layoutsDictionary, type LayoutTemplate, type Placeholder } from '../utils/layouts';
+
+export type { LayoutTemplate, Placeholder };
 
 export interface MediaItem {
   path: string;
   aspect: 'H' | 'V' | 'S';
+  aspectRatio?: number; // Real aspect ratio (W/H)
   cropX?: number;   
   cropY?: number;   
   cropScale?: number; 
@@ -37,6 +40,7 @@ export interface AlbumConfig {
   numPages?: number;
   binderyId?: string;
   templateId?: string;
+  autoLayoutOnRemove?: boolean;
 }
 
 export interface Spread {
@@ -98,11 +102,17 @@ interface ProjectState {
   setSpreadLayout: (spreadId: string, layoutId: string) => void;
   swapPhotos: (spreadId: string, fromPhId: string, toPhId: string) => void;
   saveCustomLayout: (layout: LayoutTemplate) => void;
+  deleteCustomLayout: (id: string) => void;
+  hasLayoutForPhotoCount: (count: number) => boolean;
+  getProjectFormat: () => 'square' | 'landscape' | 'portrait';
+  getCompatibleLayouts: (count: number) => LayoutTemplate[];
+  setPendingDraftPhotos: (spreadId: string, photos: MediaItem[]) => void;
+  clearPendingDraftPhotos: () => void;
   reorderSpreads: (sourceIndex: number, targetIndex: number) => void;
   addSpread: () => void;
   deleteSpread: (index: number) => void;
-  clearPendingDraftPhotos: () => void;
-  updatePhotoCrop: (spreadId: string, placeholderId: string, cropX: number, cropY: number, cropScale: number) => void;
+  updatePhotoAspect: (spreadId: string, placeholderId: string, ratio: number) => void;
+  updatePhotoCrop: (spreadId: string, placeholderId: string, x: number, y: number, scale: number) => void;
 
   // Bindery & Template Actions
   addBindery: (name: string) => void;
@@ -122,7 +132,8 @@ const DEFAULT_CONFIG: AlbumConfig = {
   useBorder: false,
   borderWidth: 1.5,
   borderColor: '#ffffff',
-  numPages: 20
+  numPages: 20,
+  autoLayoutOnRemove: true
 };
 
 const syncProject = (state: ProjectState): ProjectData[] => {
@@ -137,23 +148,23 @@ const syncProject = (state: ProjectState): ProjectData[] => {
 export const useProjectStore = create<ProjectState>()(
   devtools(
     persist(
-      (set) => ({
-        projects: [],
-        activeProjectId: null,
-        currentView: 'dashboard',
+      (set, get) => ({
+        projects: [] as ProjectData[],
+        activeProjectId: null as string | null,
+        currentView: 'dashboard' as ViewType,
         
         albumConfig: DEFAULT_CONFIG,
-        media: [],
-        spreads: [],
-        customLayouts: {},
+        media: [] as MediaItem[],
+        spreads: [] as Spread[],
+        customLayouts: { ...layoutsDictionary } as Record<string, LayoutTemplate>,
         activeSpreadIndex: 0,
         
-        binderies: [],
-        albumTemplates: [],
+        binderies: [] as Bindery[],
+        albumTemplates: [] as AlbumTemplate[],
 
-        layoutDesignerPendingCount: null,
-        pendingDraftPhotos: null,
-        toast: null,
+        layoutDesignerPendingCount: null as number | null,
+        pendingDraftPhotos: null as { spreadId: string, photos: MediaItem[] } | null,
+        toast: null as Toast | null,
 
         showToast: (message, type = 'success') => set({ toast: { message, type } }),
         clearToast: () => set({ toast: null }),
@@ -162,12 +173,17 @@ export const useProjectStore = create<ProjectState>()(
           let updates: Partial<ProjectState> = { currentView: view };
           if (view === 'editor' && state.pendingDraftPhotos) {
             const { spreadId, photos } = state.pendingDraftPhotos;
-            const allLayouts = { ...layoutsDictionary, ...state.customLayouts };
-            const matchingLayoutId = Object.keys(allLayouts).find(k => allLayouts[k].photoCount === photos.length);
-            if (matchingLayoutId) {
-              const layout = allLayouts[matchingLayoutId];
+            const allLayouts = Object.values(state.customLayouts);
+            const format = state.getProjectFormat();
+            const matchingLayout = allLayouts.find(L => 
+              L.photoCount === photos.length && 
+              (!L.format || L.format === 'all' || L.format === format)
+            );
+
+            if (matchingLayout) {
+              const matchingLayoutId = matchingLayout.id;
               const imgMap: Record<string, MediaItem> = {};
-              photos.forEach((img, i) => { if (layout.placeholders[i]) imgMap[layout.placeholders[i].id] = img; });
+              photos.forEach((img, i) => { if (matchingLayout.placeholders[i]) imgMap[matchingLayout.placeholders[i].id] = img; });
               updates.spreads = state.spreads.map(s => s.id === spreadId ? { ...s, layoutId: matchingLayoutId, images: imgMap } : s);
             }
             updates.pendingDraftPhotos = null;
@@ -197,12 +213,19 @@ export const useProjectStore = create<ProjectState>()(
           }));
 
           if (initialMedia.length > 0) {
-            const allLayouts = { ...layoutsDictionary, ...state.customLayouts };
-            const matchingLayoutId = Object.keys(allLayouts).find(k => allLayouts[k].photoCount === initialMedia.length);
-            if (matchingLayoutId) {
-              const layout = allLayouts[matchingLayoutId];
+            const allLayouts = Object.values(state.customLayouts);
+            const ratio = fullConfig.spreadWidth / (fullConfig.spreadHeight || 1);
+            const format = ratio > 2.2 ? 'landscape' : ratio < 1.8 ? 'portrait' : 'square';
+
+            const matchingLayout = allLayouts.find(L => 
+              L.photoCount === initialMedia.length && 
+              (!L.format || L.format === 'all' || L.format === format)
+            );
+
+            if (matchingLayout) {
+              const matchingLayoutId = matchingLayout.id;
               const imgMap: Record<string, MediaItem> = {};
-              initialMedia.forEach((img, i) => { if (layout.placeholders[i]) imgMap[layout.placeholders[i].id] = img; });
+              initialMedia.forEach((img, i) => { if (matchingLayout.placeholders[i]) imgMap[matchingLayout.placeholders[i].id] = img; });
               spreads = spreads.map((s, idx) => idx === 0 ? { ...s, layoutId: matchingLayoutId, images: imgMap } : s);
             }
           }
@@ -279,13 +302,20 @@ export const useProjectStore = create<ProjectState>()(
             if (s.id !== spreadId) return s;
             const currentImages = Object.values(s.images);
             const totalPhotos = currentImages.length + items.length;
-            const allLayouts = { ...layoutsDictionary, ...state.customLayouts };
-            const matchingLayoutId = Object.keys(allLayouts).find(k => allLayouts[k].photoCount === totalPhotos);
-            if (!matchingLayoutId) return s;
-            const layout = allLayouts[matchingLayoutId];
+            const allLayouts = Object.values(state.customLayouts);
+            const format = state.getProjectFormat();
+
+            const matchingLayout = allLayouts.find(L => 
+              L.photoCount === totalPhotos && 
+              (!L.format || L.format === 'all' || L.format === format)
+            );
+
+            if (!matchingLayout) return s;
+            
+            const matchingLayoutId = matchingLayout.id;
             const newImagesMap: Record<string, MediaItem> = {};
             const combined = [...currentImages, ...items];
-            combined.forEach((img, i) => { if (layout.placeholders[i]) newImagesMap[layout.placeholders[i].id] = img; });
+            combined.forEach((img, i) => { if (matchingLayout.placeholders[i]) newImagesMap[matchingLayout.placeholders[i].id] = img; });
             return { ...s, layoutId: matchingLayoutId, images: newImagesMap };
           });
           const newState = { ...state, spreads: newSpreads };
@@ -316,8 +346,27 @@ export const useProjectStore = create<ProjectState>()(
         removePhotoFromPlaceholder: (spreadId, phId) => set((state) => {
           const newSpreads = state.spreads.map(s => {
             if (s.id !== spreadId) return s;
+            
             const newImages = { ...s.images };
             delete newImages[phId];
+
+            if (state.albumConfig.autoLayoutOnRemove) {
+               const photos = Object.values(newImages);
+               const format = state.getProjectFormat();
+               const allLayouts = Object.values(state.customLayouts);
+               const matchingLayout = allLayouts.find(L => 
+                 L.photoCount === photos.length && 
+                 (!L.format || L.format === 'all' || L.format === format)
+               );
+
+               if (matchingLayout) {
+                 const updatedImages: Record<string, MediaItem> = {};
+                 photos.forEach((img, i) => {
+                   if (matchingLayout.placeholders[i]) updatedImages[matchingLayout.placeholders[i].id] = img;
+                 });
+                 return { ...s, layoutId: matchingLayout.id, images: updatedImages };
+               }
+            }
             return { ...s, images: newImages };
           });
           const newState = { ...state, spreads: newSpreads };
@@ -327,10 +376,10 @@ export const useProjectStore = create<ProjectState>()(
         setSpreadLayout: (spreadId, layoutId) => set((state) => {
           const newSpreads = state.spreads.map(s => {
             if (s.id !== spreadId) return s;
-            const layout = { ...layoutsDictionary, ...state.customLayouts }[layoutId];
+            const L = state.customLayouts[layoutId];
             const oldImages = Object.values(s.images);
             const newImages: Record<string, MediaItem> = {};
-            oldImages.slice(0, layout.photoCount).forEach((img, i) => { newImages[layout.placeholders[i].id] = img; });
+            oldImages.slice(0, L.photoCount).forEach((img, i) => { newImages[L.placeholders[i].id] = img; });
             return { ...s, layoutId, images: newImages };
           });
           const newState = { ...state, spreads: newSpreads };
@@ -356,11 +405,47 @@ export const useProjectStore = create<ProjectState>()(
           return { spreads: newSpreads, projects: syncProject(newState) };
         }),
 
-        saveCustomLayout: (layout) => set((state) => ({
-          customLayouts: { ...state.customLayouts, [layout.id]: layout }
+        saveCustomLayout: (L) => set((state) => ({
+          customLayouts: { ...state.customLayouts, [L.id]: L }
         })),
 
-        reorderSpreads: (src, dst) => set((state) => {
+        deleteCustomLayout: (id) => set((state) => {
+          const newCustom = { ...state.customLayouts };
+          delete newCustom[id];
+          const newState = { ...state, customLayouts: newCustom };
+          return { customLayouts: newCustom, projects: syncProject(newState) };
+        }),
+
+        getProjectFormat: () => {
+          const { spreadWidth, spreadHeight } = get().albumConfig;
+          const ratio = spreadWidth / (spreadHeight || 1);
+          if (ratio > 2.2) return 'landscape';
+          if (ratio < 1.8) return 'portrait';
+          return 'square';
+        },
+
+        hasLayoutForPhotoCount: (count) => {
+          const { customLayouts } = get();
+          const format = get().getProjectFormat();
+          return Object.values(customLayouts).some(l => 
+            l.photoCount === count && (l.format === 'all' || l.format === format || !l.format)
+          );
+        },
+
+        getCompatibleLayouts: (count) => {
+          const { customLayouts } = get();
+          const format = get().getProjectFormat();
+          return Object.values(customLayouts).filter(l => 
+            l.photoCount === count && (l.format === 'all' || l.format === format || !l.format)
+          );
+        },
+
+        setPendingDraftPhotos: (spreadId: string, photos: MediaItem[]) => set({ 
+          pendingDraftPhotos: { spreadId, photos },
+          layoutDesignerPendingCount: photos.length
+        }),
+
+        reorderSpreads: (src: number, dst: number) => set((state) => {
           const newSpreads = [...state.spreads];
           const [moved] = newSpreads.splice(src, 1);
           newSpreads.splice(dst, 0, moved);
@@ -380,7 +465,7 @@ export const useProjectStore = create<ProjectState>()(
           return { spreads: newSpreads, albumConfig: newConfig, projects: syncProject(newState) };
         }),
 
-        deleteSpread: (idx) => set((state) => {
+        deleteSpread: (idx: number) => set((state) => {
           if (state.spreads.length <= 1) return state;
           const newSpreads = [...state.spreads];
           newSpreads.splice(idx, 1);
@@ -392,6 +477,17 @@ export const useProjectStore = create<ProjectState>()(
         }),
 
         clearPendingDraftPhotos: () => set({ pendingDraftPhotos: null, layoutDesignerPendingCount: null }),
+
+        updatePhotoAspect: (spreadId, phId, ratio) => set((state) => {
+          const newSpreads = state.spreads.map(s => {
+            if (s.id !== spreadId) return s;
+            const img = s.images[phId];
+            if (!img || img.aspectRatio === ratio) return s;
+            return { ...s, images: { ...s.images, [phId]: { ...img, aspectRatio: ratio } } };
+          });
+          const newState = { ...state, spreads: newSpreads };
+          return { spreads: newSpreads, projects: syncProject(newState) };
+        }),
 
         updatePhotoCrop: (spreadId, phId, x, y, s) => set((state) => {
           const newSpreads = state.spreads.map(spr => {
@@ -428,24 +524,20 @@ export const useProjectStore = create<ProjectState>()(
         deleteAlbumTemplate: (id) => set((state) => ({
           albumTemplates: state.albumTemplates.filter(t => t.id !== id)
         })),
-
       }),
       { 
         name: 'pro-albuns-storage',
-        version: 2,
+        version: 3,
         migrate: (persistedState: any, version: number) => {
           if (version < 2) {
-            // Migration to Spread terminology
             const config = persistedState.albumConfig;
             if (config) {
               if (config.pageWidth && !config.spreadWidth) {
-                config.spreadWidth = config.pageWidth;
-                config.spreadHeight = config.pageHeight;
+                config.spreadWidth = config.pageWidth; config.spreadHeight = config.pageHeight;
                 delete config.pageWidth; delete config.pageHeight;
               }
               if (config.bladeWidth && !config.spreadWidth) {
-                config.spreadWidth = config.bladeWidth;
-                config.spreadHeight = config.bladeHeight;
+                config.spreadWidth = config.bladeWidth; config.spreadHeight = config.bladeHeight;
                 delete config.bladeWidth; delete config.bladeHeight;
               }
             }
@@ -453,33 +545,43 @@ export const useProjectStore = create<ProjectState>()(
               persistedState.projects = persistedState.projects.map((p: any) => {
                 if (p.config) {
                   if (p.config.pageWidth && !p.config.spreadWidth) {
-                    p.config.spreadWidth = p.config.pageWidth;
-                    p.config.spreadHeight = p.config.pageHeight;
+                    p.config.spreadWidth = p.config.pageWidth; p.config.spreadHeight = p.config.pageHeight;
                     delete p.config.pageWidth; delete p.config.pageHeight;
                   }
                   if (p.config.bladeWidth && !p.config.spreadWidth) {
-                    p.config.spreadWidth = p.config.bladeWidth;
-                    p.config.spreadHeight = p.config.bladeHeight;
+                    p.config.spreadWidth = p.config.bladeWidth; p.config.spreadHeight = p.config.bladeHeight;
                     delete p.config.bladeWidth; delete p.config.bladeHeight;
                   }
                 }
                 return p;
               });
             }
-            if (persistedState.albumTemplates) {
-              persistedState.albumTemplates = persistedState.albumTemplates.map((t: any) => {
-                if (t.pageWidth && !t.spreadWidth) {
-                  t.spreadWidth = t.pageWidth;
-                  t.spreadHeight = t.pageHeight;
-                  delete t.pageWidth; delete t.pageHeight;
-                }
-                if (t.bladeWidth && !t.spreadWidth) {
-                  t.spreadWidth = t.bladeWidth;
-                  t.spreadHeight = t.bladeHeight;
-                  delete t.bladeWidth; delete t.bladeHeight;
-                }
-                return t;
+          }
+          if (version < 3) {
+            const sanitize = (p: string) => {
+              if (p && !p.startsWith('file:///') && !p.startsWith('blob:') && /^[a-zA-Z]:/.test(p)) {
+                return `file:///${p.replace(/\\/g, '/')}`;
+              }
+              return p;
+            };
+            if (persistedState.media) persistedState.media = persistedState.media.map((m: any) => ({ ...m, path: sanitize(m.path) }));
+            if (persistedState.spreads) {
+              persistedState.spreads = persistedState.spreads.map((s: any) => {
+                const newImgs: any = {};
+                Object.entries(s.images || {}).forEach(([k, v]: [string, any]) => { newImgs[k] = { ...v, path: sanitize(v.path) }; });
+                return { ...s, images: newImgs };
               });
+            }
+            if (persistedState.projects) {
+              persistedState.projects = persistedState.projects.map((proj: any) => ({
+                ...proj,
+                media: (proj.media || []).map((m: any) => ({ ...m, path: sanitize(m.path) })),
+                spreads: (proj.spreads || []).map((s: any) => {
+                  const newImgs: any = {};
+                  Object.entries(s.images || {}).forEach(([k, v]: [string, any]) => { newImgs[k] = { ...v, path: sanitize(v.path) }; });
+                  return { ...s, images: newImgs };
+                })
+              }));
             }
           }
           return persistedState;

@@ -1,6 +1,6 @@
 import React from 'react';
 import { useProjectStore } from '../store/useProjectStore';
-import { layoutsDictionary } from '../utils/layouts';
+
 
 import ConfirmDialog from './ConfirmDialog';
 
@@ -8,14 +8,16 @@ const SpreadNavigator: React.FC = () => {
   const { 
     spreads, activeSpreadIndex, setActiveSpread, 
     customLayouts, reorderSpreads, addSpread, deleteSpread,
-    addPhotosToSpread
+    addPhotosToSpread, hasLayoutForPhotoCount, setPendingDraftPhotos,
+    setCurrentView
   } = useProjectStore();
-  const allLayouts = { ...layoutsDictionary, ...customLayouts };
+  const allLayouts = customLayouts;
   
   const [draggedIndex, setDraggedIndex] = React.useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = React.useState<number | null>(null);
   const [dragCounter, setDragCounter] = React.useState<Record<number, number>>({});
   const [spreadToDelete, setSpreadToDelete] = React.useState<number | null>(null);
+  const [layoutConfirm, setLayoutConfirm] = React.useState<{ spreadId: string, items: any[], count: number } | null>(null);
 
   const handleDragStart = (idx: number) => {
     setDraggedIndex(idx);
@@ -51,6 +53,14 @@ const SpreadNavigator: React.FC = () => {
       try {
         const items = JSON.parse(jsonData);
         if (Array.isArray(items) && items.length > 0 && items[0].path) {
+          const currentPhotos = Object.keys(spreads[idx].images).length;
+          const totalPhotos = currentPhotos + items.length;
+          
+          if (!hasLayoutForPhotoCount(totalPhotos)) {
+            setLayoutConfirm({ spreadId, items, count: totalPhotos });
+            return;
+          }
+
           addPhotosToSpread(spreadId, items);
           setActiveSpread(idx);
           setDragOverIndex(null);
@@ -84,6 +94,23 @@ const SpreadNavigator: React.FC = () => {
           setSpreadToDelete(null);
         }}
         onCancel={() => setSpreadToDelete(null)}
+      />
+
+      <ConfirmDialog
+        isOpen={layoutConfirm !== null}
+        title="Layout Indisponível"
+        message={`Não encontramos um layout automático para ${layoutConfirm?.count} fotos. Deseja criar um layout personalizado agora no Studio?`}
+        confirmLabel="Ir para o Studio"
+        variant="primary"
+        onConfirm={() => {
+          if (layoutConfirm) {
+            setPendingDraftPhotos(layoutConfirm.spreadId, layoutConfirm.items);
+            useProjectStore.setState({ layoutDesignerPendingCount: layoutConfirm.count });
+            setCurrentView('layout_designer');
+          }
+          setLayoutConfirm(null);
+        }}
+        onCancel={() => setLayoutConfirm(null)}
       />
 
       <div className="flex items-center gap-4 py-2">

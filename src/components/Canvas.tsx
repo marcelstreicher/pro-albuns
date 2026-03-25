@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useProjectStore, type MediaItem } from '../store/useProjectStore';
-import { layoutsDictionary } from '../utils/layouts';
+import ConfirmDialog from './ConfirmDialog';
+import EditorSettingsModal from './EditorSettingsModal';
 
 interface CanvasProps {
   selectedPlaceholder: string | null;
@@ -14,13 +15,16 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
     albumConfig, spreads, activeSpreadIndex,
     addPhotoToPlaceholder, removePhotoFromPlaceholder,
     customLayouts, addPhotosToSpread, showToast,
-    swapPhotos, setActiveSpread
+    swapPhotos, setActiveSpread, hasLayoutForPhotoCount,
+    setPendingDraftPhotos, setCurrentView, getCompatibleLayouts
   } = useProjectStore();
   const activeSpread = spreads[activeSpreadIndex];
 
   const [dragOverPlaceholder, setDragOverPlaceholder] = useState<string | null>(null);
+  const [layoutConfirm, setLayoutConfirm] = useState<{ items: MediaItem[], count: number } | null>(null);
   // cropMode = double-clicked placeholder where user can drag-pan directly on canvas
   const [cropModePlaceholder, setCropModePlaceholder] = useState<string | null>(null);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   // Image Aspect Ratio discovery (real-time from img load)
   const [detectedImgAspects, setDetectedImgAspects] = useState<Record<string, number>>({});
@@ -28,7 +32,9 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
   const onImageLoad = (placeholderId: string, e: React.SyntheticEvent<HTMLImageElement>) => {
     const { naturalWidth, naturalHeight } = e.currentTarget;
     if (naturalWidth && naturalHeight) {
-      setDetectedImgAspects(prev => ({ ...prev, [placeholderId]: naturalWidth / naturalHeight }));
+      const ratio = naturalWidth / naturalHeight;
+      setDetectedImgAspects(prev => ({ ...prev, [placeholderId]: ratio }));
+      if (activeSpread) useProjectStore.getState().updatePhotoAspect(activeSpread.id, placeholderId, ratio);
     }
   };
 
@@ -38,7 +44,7 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
   const [liveCanvasCrop, setLiveCanvasCrop] = useState<{ cropX: number, cropY: number, cropScale: number } | null>(null);
   const phRef = useRef<HTMLDivElement | null>(null);
 
-  const allLayouts = activeSpread ? { ...layoutsDictionary, ...customLayouts } : {};
+  const allLayouts = activeSpread ? customLayouts : {};
   const layout = activeSpread ? allLayouts[activeSpread.layoutId] : undefined;
 
   // Calculate Aspect Ratio of the active placeholder
@@ -63,17 +69,13 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
     return 1.5;
   }, [cropModePlaceholder, selectedPlaceholder, activeSpread, detectedImgAspects]);
 
-  const extraRange = useMemo(() => {
-    if (imgAspect > phAspect) return { x: ((imgAspect / phAspect - 1) / 2) * 100, y: 0 };
-    return { x: 0, y: ((phAspect / imgAspect - 1) / 2) * 100 };
-  }, [imgAspect, phAspect]);
 
   const photoCount = activeSpread ? Object.keys(activeSpread.images).length : 0;
-  const matchingLayouts = Object.values(allLayouts).filter(l => l.photoCount === photoCount);
+  const matchingLayouts = getCompatibleLayouts(photoCount);
   const currentLayoutIndex = matchingLayouts.findIndex(l => l.id === activeSpread?.layoutId);
 
-  function clampOffset(offset: number, scale: number, extra: number = 0) {
-    const max = (((scale - 1) / 2) * 100) + extra;
+  function clampOffset(offset: number, scale: number, M: number) {
+    const max = ((M * scale - 1) / 2) * 100;
     return Math.max(-max, Math.min(max, offset));
   }
 
@@ -106,8 +108,10 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
       const rect = phRef.current.getBoundingClientRect();
       const dx = ((e.clientX - cropDragStart.current.mx) / rect.width) * 100;
       const dy = ((e.clientY - cropDragStart.current.my) / rect.height) * 100;
-      const newX = clampOffset(cropDragStart.current.cropX + dx, liveCanvasCrop.cropScale, extraRange.x);
-      const newY = clampOffset(cropDragStart.current.cropY + dy, liveCanvasCrop.cropScale, extraRange.y);
+      const Mx = Math.max(1, imgAspect / phAspect);
+      const My = Math.max(1, phAspect / imgAspect);
+      const newX = clampOffset(cropDragStart.current.cropX + dx, liveCanvasCrop.cropScale, Mx);
+      const newY = clampOffset(cropDragStart.current.cropY + dy, liveCanvasCrop.cropScale, My);
       setLiveCanvasCrop(prev => prev ? { ...prev, cropX: newX, cropY: newY } : null);
     };
     const onUp = () => {
@@ -192,6 +196,15 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
       try {
         const parsed = JSON.parse(data);
         const items = (Array.isArray(parsed) ? parsed : [parsed]) as MediaItem[];
+        
+        const currentPhotos = Object.keys(activeSpread.images).length;
+        const totalPhotos = currentPhotos + items.length;
+
+        if (!hasLayoutForPhotoCount(totalPhotos)) {
+          setLayoutConfirm({ items, count: totalPhotos });
+          return;
+        }
+
         addPhotosToSpread(activeSpread.id, items);
       } catch (err) { console.error('Canvas Drop failed', err); }
     }
@@ -202,6 +215,28 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
       className="flex-1 canvas-grid flex items-center justify-center pb-16 relative overflow-hidden"
       onClick={() => { onSelectPlaceholder(null); setCropModePlaceholder(null); }}
     >
+      <ConfirmDialog
+        isOpen={layoutConfirm !== null}
+        title="Layout Indisponível"
+        message={`Não encontramos um layout automático para ${layoutConfirm?.count} fotos. Deseja criar um layout personalizado agora no Studio?`}
+        confirmLabel="Ir para o Studio"
+        variant="primary"
+        onConfirm={() => {
+          if (layoutConfirm && activeSpread) {
+            setPendingDraftPhotos(activeSpread.id, layoutConfirm.items);
+            useProjectStore.setState({ layoutDesignerPendingCount: layoutConfirm.count });
+            setCurrentView('layout_designer');
+          }
+          setLayoutConfirm(null);
+        }}
+        onCancel={() => setLayoutConfirm(null)}
+      />
+
+      <EditorSettingsModal 
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+      />
+
       {/* Toolbar */}
       <div className="absolute top-6 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1 p-1 bg-surface-container-high/80 backdrop-blur-xl rounded-full border border-outline-variant/20 shadow-2xl">
         <button className="w-10 h-10 flex items-center justify-center rounded-full bg-primary text-on-primary shadow-lg" title="Selecionar">
@@ -279,6 +314,14 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
               ? liveCanvasCrop
               : { cropX: image?.cropX ?? 0, cropY: image?.cropY ?? 0, cropScale: image?.cropScale ?? 1 };
 
+            const currentImgAspect = detectedImgAspects[ph.id] || 1.5;
+            const currentPhAspect = (ph.width / ph.height) * spreadRatio;
+            const Mx = Math.max(1, currentImgAspect / currentPhAspect);
+            const My = Math.max(1, currentPhAspect / currentImgAspect);
+
+            const tx = -50 + (crop.cropX / Mx);
+            const ty = -50 + (crop.cropY / My);
+
             return (
               <div
                 key={ph.id}
@@ -294,28 +337,37 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
                 style={{ 
                   left: `${ph.x}%`, 
                   top: `${ph.y}%`, 
-                  width: `${ph.width}%`, 
-                  height: `${ph.height}%`,
+                  width: `calc(${ph.width}% + 1px)`, 
+                  height: `calc(${ph.height}% + 1px)`,
                   ...(albumConfig.useBorder ? {
                     border: `${(albumConfig.borderWidth || 1) * 2}px solid ${albumConfig.borderColor || '#ffffff'}`
-                  } : { border: 'none' })
+                  } : { border: 'none' }),
+                  backgroundColor: isSelected ? 'var(--color-primary-container-low, #e0e0e0)' : '#f8f9fa',
+                  boxShadow: isSelected ? '0 0 0 2px var(--color-primary)' : 'none',
+                  overflow: 'hidden'
                 }}
-                className={`absolute overflow-hidden transition-all duration-150
-                  ${isCropMode ? 'ring-4 ring-secondary/30 z-30 cursor-none border-secondary !border-2' :
-                    isHovered ? 'ring-4 ring-primary z-20 border-primary !border-2 scale-[1.02] shadow-2xl' :
-                    isSelected ? 'ring-2 ring-primary/20 z-20 border-primary !border-2' :
-                    'bg-surface-container-lowest cursor-pointer hover:border-outline-variant/50'}`}
+                className={`absolute transition-all duration-150
+                  ${isCropMode ? 'ring-4 ring-secondary/30 z-30 cursor-none' :
+                    isHovered ? 'ring-4 ring-primary z-20 scale-[1.02] shadow-2xl' :
+                    isSelected ? 'ring-2 ring-primary/20 z-20' :
+                    'cursor-pointer hover:border-outline-variant/50'}`}
               >
                 {image ? (
                   <>
                     <img
-                      className="absolute inset-0 w-full h-full object-cover pointer-events-none select-none"
+                      className="absolute pointer-events-none select-none"
                       draggable={false}
                       src={image.path}
                       onLoad={e => onImageLoad(ph.id, e)}
                       style={{
+                        position: 'absolute',
+                        top: '50%',
+                        left: '50%',
+                        width: `${Mx * 101}%`,
+                        height: `${My * 101}%`,
+                        objectFit: 'cover',
                         transformOrigin: 'center',
-                        transform: `translate(${crop.cropX}%, ${crop.cropY}%) scale(${crop.cropScale})`,
+                        transform: `translate(${tx}%, ${ty}%) scale(${crop.cropScale})`,
                         transition: isDraggingCrop.current ? 'none' : 'transform 0.1s ease',
                       }}
                     />
@@ -383,6 +435,16 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
           title="Resetar Zoom (100%)"
         >
           {(canvasZoom * 100).toFixed(0)}%
+        </button>
+
+        <div className="w-px h-6 bg-outline-variant/30 mx-1"></div>
+
+        <button
+          onClick={(e) => { e.stopPropagation(); setIsSettingsOpen(true); }}
+          className="w-10 h-10 flex items-center justify-center rounded-full text-on-surface-variant hover:bg-surface-variant transition-colors"
+          title="Configurações do Editor"
+        >
+          <span className="material-symbols-outlined text-lg">settings</span>
         </button>
       </div>
     </div>

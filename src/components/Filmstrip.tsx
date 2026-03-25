@@ -160,7 +160,11 @@ const Filmstrip: React.FC = () => {
     const mediaItems = await Promise.all(
       imageFiles.map((file) => new Promise<MediaItem>((resolve) => {
         // In Electron, File objects have a 'path' property
-        const filePath = (file as any).path || URL.createObjectURL(file);
+        const electronPath = (file as any).path;
+        const filePath = electronPath 
+          ? `file:///${electronPath.replace(/\\/g, '/')}` 
+          : URL.createObjectURL(file);
+
         const img = new Image();
         img.onload = () => {
           let aspect: 'H'|'V'|'S' = 'S';

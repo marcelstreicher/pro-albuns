@@ -1,6 +1,5 @@
 import React, { useMemo, useState, useRef, useCallback, useEffect } from 'react';
 import { useProjectStore } from '../store/useProjectStore';
-import { layoutsDictionary } from '../utils/layouts';
 
 // Clamp crop offset so image always covers the placeholder
 // Scale 1 = object-cover. If aspect ratios don't match, there's always an overflow.
@@ -26,9 +25,8 @@ const Inspector: React.FC<InspectorProps> = ({ selectedPlaceholder, onCropChange
   // Calculate Aspect Ratio of the selected Placeholder
   const phAspect = useMemo(() => {
     if (!selectedPlaceholder || !activeSpread) return 1.5; // fallback
-    const allLayouts = { ...layoutsDictionary, ...customLayouts };
-    const layout = allLayouts[activeSpread.layoutId];
-    const ph = layout?.placeholders.find(p => p.id === selectedPlaceholder);
+    const L = customLayouts[activeSpread.layoutId];
+    const ph = L?.placeholders.find(p => p.id === selectedPlaceholder);
     if (!ph) return 1.5;
     
     // Width in mm
@@ -119,15 +117,20 @@ const Inspector: React.FC<InspectorProps> = ({ selectedPlaceholder, onCropChange
   }, [cropState, commitCrop]);
 
   // Layout gallery
-  const allLayouts = { ...layoutsDictionary, ...customLayouts };
+  const { getProjectFormat } = useProjectStore();
   const layoutsByCount = useMemo(() => {
-    const groups: Record<number, typeof allLayouts[string][]> = {};
-    Object.values(allLayouts).forEach(layout => {
-      if (!groups[layout.photoCount]) groups[layout.photoCount] = [];
-      groups[layout.photoCount].push(layout);
+    const format = getProjectFormat();
+    const groups: Record<number, any[]> = {};
+    Object.values(customLayouts).forEach(L => {
+      // Filter by format
+      const matchesFormat = !L.format || L.format === 'all' || L.format === format;
+      if (!matchesFormat) return;
+
+      if (!groups[L.photoCount]) groups[L.photoCount] = [];
+      groups[L.photoCount].push(L);
     });
     return groups;
-  }, [customLayouts]);
+  }, [customLayouts, getProjectFormat]);
 
   if (!activeSpread) return null;
 

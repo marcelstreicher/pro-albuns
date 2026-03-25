@@ -1,5 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { type LayoutTemplate } from '../utils/layouts';
+import { detectPlaceholdersFromImage } from '../utils/LayoutDetector';
 import { useProjectStore } from '../store/useProjectStore';
+import ConfirmDialog from './ConfirmDialog';
 
 interface DraftPlaceholder {
   id: string;
@@ -16,11 +19,13 @@ const generateId = () => Math.random().toString(36).substr(2, 9);
 const SNAP_TOLERANCE = 1.5; // percent
 
 const LayoutDesigner: React.FC = () => {
-  const { albumConfig, setAlbumConfig, customLayouts } = useProjectStore();
+  const { albumConfig, customLayouts, setCurrentView, pendingDraftPhotos, deleteCustomLayout } = useProjectStore();
   const [placeholders, setPlaceholders] = useState<DraftPlaceholder[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editingPresetId, setEditingPresetId] = useState<string | null>(null);
+  const [layoutToDelete, setLayoutToDelete] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, phId: string } | null>(null);
+  const [designerFormat, setDesignerFormat] = useState<'square' | 'landscape' | 'portrait'>('square');
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Drag state
@@ -40,18 +45,44 @@ const LayoutDesigner: React.FC = () => {
   const [activeGaps, setActiveGaps] = useState<{ x: number, y: number, w: number, h: number, valCm: number }[]>([]);
 
   // Toast notification
-  const [toast, setToast] = useState<{ message: string, type: 'success' | 'info' } | null>(null);
+  const [toast, setToast] = useState<{ message: string, type: 'success' | 'info' | 'warning' } | null>(null);
   const toastTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const showToast = (message: string, type: 'success' | 'info' = 'success') => {
+  const showToast = (message: string, type: 'success' | 'info' | 'warning' = 'success') => {
     if (toastTimeout.current) clearTimeout(toastTimeout.current);
     setToast({ message, type });
     toastTimeout.current = setTimeout(() => setToast(null), 3500);
   };
 
   useEffect(() => () => { if (toastTimeout.current) clearTimeout(toastTimeout.current); }, []);
+  
+  const spreadRatio = designerFormat === 'landscape' ? 3.0 : designerFormat === 'portrait' ? 1.33 : 2.0;
 
-  const spreadRatio = (albumConfig.spreadWidth / (albumConfig.spreadHeight || 1)) || 2;
+  // Virtual Dimensions for Measurements in Studio (cm)
+  const getVirtualDimensions = (format: 'square' | 'landscape' | 'portrait') => {
+     if (format === 'landscape') return { w: 60, h: 20 }; // 30x20 pages -> 60x20 spread
+     if (format === 'portrait') return { w: 40, h: 30 };  // 20x30 pages -> 40x30 spread
+     return { w: 60, h: 30 }; // 30x30 pages -> 60x30 spread
+  };
+
+  // Keydown listener for Deletion
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'TEXTAREA') return;
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId) {
+        setPlaceholders(prev => prev.filter(p => p.id !== selectedId));
+        setSelectedId(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedId]);
+
+  // Initial Format Sync
+  useEffect(() => {
+    const format = useProjectStore.getState().getProjectFormat();
+    setDesignerFormat(format);
+  }, []);
 
   useEffect(() => {
     const state = useProjectStore.getState();
@@ -389,10 +420,11 @@ const LayoutDesigner: React.FC = () => {
     if (editingPresetId) {
        const existing = customLayouts[editingPresetId];
        if (existing) {
-          const layoutConfig = {
+          const layoutConfig: LayoutTemplate = {
              ...existing,
              photoCount: placeholders.length,
-             placeholders: placeholders.map(p => ({...p}))
+             placeholders: placeholders.map(p => ({...p})),
+             format: designerFormat
           };
           useProjectStore.getState().saveCustomLayout(layoutConfig);
           showToast(`Preset "${existing.name}" atualizado com sucesso!`);
@@ -400,26 +432,34 @@ const LayoutDesigner: React.FC = () => {
        }
     }
 
-    const layoutConfig = {
+    const layoutConfig: LayoutTemplate = {
       id: `custom_${generateId()}`,
       name: `Preset ${Object.keys(customLayouts).length + 1} (${placeholders.length} Fotos)`,
       photoCount: placeholders.length,
-      placeholders: placeholders.map(p => ({...p}))
+      placeholders: placeholders.map(p => ({...p})),
+      format: designerFormat
     };
     useProjectStore.getState().saveCustomLayout(layoutConfig);
     setEditingPresetId(layoutConfig.id);
     showToast(`Novo preset salvo com ${placeholders.length} fotos! Uso liberado no Editor.`);
+
+    // If we came here from a pending drop, return to editor automatically
+    if (pendingDraftPhotos) {
+      setCurrentView('editor');
+    }
   };
 
   return (
-    <div className="flex-1 flex flex-col bg-surface relative h-full">
+    <div className="flex-1 flex flex-col bg-surface relative h-full overflow-hidden">
       {/* Toast Notification */}
       {toast && (
         <div className={`fixed bottom-8 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-3 px-5 py-3 rounded-xl shadow-2xl border backdrop-blur-xl pointer-events-none
-          ${toast.type === 'success' ? 'bg-surface-container-high border-primary/30 text-on-surface' : 'bg-surface-container-high border-outline-variant/30 text-on-surface'}`}
+          ${toast.type === 'success' ? 'bg-surface-container-high border-primary/30 text-on-surface' : 
+    toast.type === 'warning' ? 'bg-error-container border-error/30 text-on-error-container' :
+    'bg-surface-container-high border-outline-variant/30 text-on-surface'}`}
         >
-          <span className={`material-symbols-outlined text-xl ${toast.type === 'success' ? 'text-primary' : 'text-on-surface-variant'}`}>
-            {toast.type === 'success' ? 'check_circle' : 'info'}
+          <span className={`material-symbols-outlined text-xl ${toast.type === 'success' ? 'text-primary' : toast.type === 'warning' ? 'text-error' : 'text-on-surface-variant'}`}>
+            {toast.type === 'success' ? 'check_circle' : toast.type === 'warning' ? 'warning' : 'info'}
           </span>
           <span className="text-sm font-medium whitespace-nowrap">{toast.message}</span>
         </div>
@@ -430,17 +470,50 @@ const LayoutDesigner: React.FC = () => {
         <div className="flex items-center gap-4">
           <select 
              className="bg-surface-container-high text-xs text-on-surface p-2 rounded border border-outline-variant/20 outline-none hover:border-primary transition-colors cursor-pointer"
+             value={designerFormat}
              onChange={(e) => {
-               const val = e.target.value;
-               if(val === 'square') setAlbumConfig({ spreadWidth: 600, spreadHeight: 300 });
-               if(val === 'landscape') setAlbumConfig({ spreadWidth: 600, spreadHeight: 200 });
-               if(val === 'portrait') setAlbumConfig({ spreadWidth: 400, spreadHeight: 300 });
+               setDesignerFormat(e.target.value as any);
              }}
           >
              <option value="square">Square Format</option>
              <option value="landscape">Landscape Format</option>
              <option value="portrait">Portrait Format</option>
           </select>
+          
+          <button
+            onClick={() => {
+              const input = document.createElement('input');
+              input.type = 'file';
+              input.accept = 'image/*';
+              input.onchange = async (e) => {
+                const file = (e.target as HTMLInputElement).files?.[0];
+                if (file) {
+                  showToast('Analisando imagem...', 'info');
+                  try {
+                    const detected = await detectPlaceholdersFromImage(file);
+                    setPlaceholders(detected.map(p => ({
+                      id: p.id,
+                      x: p.x,
+                      y: p.y,
+                      width: p.width,
+                      height: p.height,
+                      locked: false
+                    })));
+                    showToast(`${detected.length} fotos detectadas com sucesso!`, 'success');
+                  } catch (err) {
+                    showToast('Falha ao analisar imagem.', 'warning');
+                    console.error(err);
+                  }
+                }
+              };
+              input.click();
+            }}
+            className="flex items-center gap-2 px-3 py-1.5 bg-primary/10 text-primary border border-primary/20 rounded hover:bg-primary/20 transition-all text-xs font-bold uppercase tracking-wider"
+          >
+            <span className="material-symbols-outlined text-sm">auto_awesome</span>
+            Smart Import
+          </button>
+
           <div className="flex items-center gap-1 bg-surface-container-high border border-outline-variant/20 px-2 py-1.5 rounded" title="Modo Magnético (Snap)">
              <span className="material-symbols-outlined text-[14px] text-on-surface-variant">magnet</span>
              <select
@@ -538,37 +611,56 @@ const LayoutDesigner: React.FC = () => {
                      setPlaceholders(layout.placeholders.map(p => ({...p})));
                      setEditingPresetId(layout.id);
                      setSelectedId(null);
+                     // Sync designer format
+                     if (layout.format && layout.format !== 'all') {
+                        setDesignerFormat(layout.format);
+                     }
                   }}
-                  className={`flex items-center gap-3 p-3 rounded border text-left cursor-pointer transition-colors overflow-hidden ${editingPresetId === layout.id ? 'bg-primary/10 border-primary text-primary' : 'bg-surface border-outline-variant/20 hover:border-primary/50 text-on-surface'}`}
+                  className={`flex items-center gap-3 p-3 rounded border text-left cursor-pointer transition-colors overflow-hidden group ${editingPresetId === layout.id ? 'bg-primary/10 border-primary text-primary' : 'bg-surface border-outline-variant/20 hover:border-primary/50 text-on-surface'}`}
                >
-                  <div 
-                     className="w-16 shrink-0 bg-surface-container-high relative overflow-hidden ring-1 ring-outline-variant/20 shadow-inner group-hover:ring-primary/50 transition-all"
-                     style={{ aspectRatio: spreadRatio }}
-                  >
-                     {/* Center Spine in Thumbnail */}
-                     <div className="absolute left-1/2 top-0 bottom-0 w-px bg-outline-variant/20"></div>
-                     
-                     {layout.placeholders.map(ph => (
+                  {(() => {
+                     const thumbRatio = layout.format === 'landscape' ? 3.0 : layout.format === 'portrait' ? 1.33 : 2.0;
+                     return (
                         <div 
-                           key={ph.id} 
-                           className="absolute border border-outline-variant/50 bg-outline-variant/10 shadow-sm"
-                           style={{
-                              left: `${ph.x}%`, 
-                              top: `${ph.y}%`, 
-                              width: `${ph.width}%`, 
-                              height: `${ph.height}%`
-                           }}
-                        />
-                     ))}
-                     {/* Badge for PhotoCount */}
-                     <div className="absolute bottom-0 right-0 bg-surface-container-highest text-on-surface-variant text-[8px] font-bold px-1 rounded-tl shadow border-l border-t border-outline-variant/20">
-                        {layout.photoCount}📸
-                     </div>
+                           className="w-16 shrink-0 bg-surface-container-high relative overflow-hidden ring-1 ring-outline-variant/20 shadow-inner group-hover:ring-primary/50 transition-all"
+                           style={{ aspectRatio: thumbRatio }}
+                        >
+                           {/* Center Spine in Thumbnail */}
+                           <div className="absolute left-1/2 top-0 bottom-0 w-px bg-outline-variant/20"></div>
+                           
+                           {layout.placeholders.map(ph => (
+                              <div 
+                                 key={ph.id} 
+                                 className="absolute border border-outline-variant/50 bg-outline-variant/10 shadow-sm"
+                                 style={{
+                                    left: `${ph.x}%`, 
+                                    top: `${ph.y}%`, 
+                                    width: `${ph.width}%`, 
+                                    height: `${ph.height}%`
+                                 }}
+                              />
+                           ))}
+                           {/* Badge for PhotoCount */}
+                           <div className="absolute bottom-0 right-0 bg-surface-container-highest text-on-surface-variant text-[8px] font-bold px-1 rounded-tl shadow border-l border-t border-outline-variant/20">
+                              {layout.photoCount}📸
+                           </div>
+                        </div>
+                     );
+                  })()}
+                  <div className="overflow-hidden flex-1 min-w-0 text-left">
+                     <div className="text-[10px] font-bold truncate leading-tight uppercase tracking-tight">{layout.name}</div>
+                     <div className="text-[8px] opacity-60 uppercase tracking-tighter mt-0.5">{layout.format || 'All'}</div>
                   </div>
-                  <div className="overflow-hidden flex-1">
-                     <div className="text-xs font-bold truncate">{layout.name}</div>
-                     <div className="text-[9px] opacity-70 truncate mt-0.5 font-mono" title={layout.id}>{layout.id}</div>
-                  </div>
+                  
+                  <button 
+                     onClick={(e) => {
+                        e.stopPropagation();
+                        setLayoutToDelete(layout.id);
+                     }}
+                     className="opacity-0 group-hover:opacity-100 p-1.5 rounded-full hover:bg-error/20 text-error transition-all"
+                  >
+                     <span className="material-symbols-outlined text-[18px]">delete</span>
+                  </button>
                </button>
             ))}
           </div>
@@ -712,8 +804,9 @@ const LayoutDesigner: React.FC = () => {
              const ph = placeholders.find(p => p.id === selectedId);
              if (!ph) return null;
              
-             const spreadW = (albumConfig.spreadWidth || 600) / 10;
-             const spreadH = (albumConfig.spreadHeight || 300) / 10;
+             const dims = getVirtualDimensions(designerFormat);
+             const spreadW = dims.w;
+             const spreadH = dims.h;
              
              const widthCm = (ph.width / 100) * spreadW;
              const heightCm = (ph.height / 100) * spreadH;
@@ -848,9 +941,26 @@ const LayoutDesigner: React.FC = () => {
              );
           })()}
         </aside>
-      </div>
+      <ConfirmDialog 
+        isOpen={layoutToDelete !== null}
+        title="Excluir Layout?"
+        message="Tem certeza que deseja excluir permanentemente este preset customizado? Esta ação não pode ser desfeita."
+        onConfirm={() => {
+           if (layoutToDelete) {
+              deleteCustomLayout(layoutToDelete);
+              if (editingPresetId === layoutToDelete) {
+                 setEditingPresetId(null);
+                 setPlaceholders([]);
+              }
+              setLayoutToDelete(null);
+              showToast("Layout excluído com sucesso!", "info");
+           }
+        }}
+        onCancel={() => setLayoutToDelete(null)}
+      />
     </div>
-  );
+  </div>
+);
 };
 
 export default LayoutDesigner;

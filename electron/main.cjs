@@ -55,6 +55,28 @@ function createWindow() {
   }
 }
 
+// --- Native Export Handlers ---
+
+ipcMain.handle('select-directory', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog({
+    properties: ['openDirectory']
+  })
+  if (canceled) return null
+  return filePaths[0]
+})
+
+ipcMain.handle('save-file', async (_event, filePath, base64Data) => {
+  try {
+    const base64Content = base64Data.split(';base64,').pop() || ''
+    const buffer = Buffer.from(base64Content, 'base64')
+    await fs.promises.writeFile(filePath, buffer)
+    return true
+  } catch (error) {
+    console.error('Failed to save file:', error)
+    return false
+  }
+})
+
 app.whenReady().then(() => {
   createWindow()
 
