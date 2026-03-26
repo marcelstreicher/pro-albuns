@@ -47,6 +47,8 @@ export interface Spread {
   id: string;
   layoutId: string; 
   images: Record<string, MediaItem>; 
+  isLocked?: boolean;
+  customPlaceholders?: Placeholder[];
 }
 
 export interface ProjectData {
@@ -81,6 +83,13 @@ interface ProjectState {
   layoutDesignerPendingCount: number | null;
   pendingDraftPhotos: { spreadId: string, photos: MediaItem[] } | null;
   toast: Toast | null;
+  isResizeMode: boolean;
+  isGridMode: boolean;
+
+  toggleResizeMode: () => void;
+  toggleGridMode: () => void;
+  toggleSpreadLock: (spreadId: string) => void;
+  updateSpreadPlaceholders: (spreadId: string, placeholders: Placeholder[]) => void;
 
   setCurrentView: (view: ViewType) => void;
   showToast: (message: string, type?: ToastType) => void;
@@ -165,6 +174,27 @@ export const useProjectStore = create<ProjectState>()(
         layoutDesignerPendingCount: null as number | null,
         pendingDraftPhotos: null as { spreadId: string, photos: MediaItem[] } | null,
         toast: null as Toast | null,
+        isResizeMode: false,
+        isGridMode: false,
+
+        toggleResizeMode: () => set((state) => ({ isResizeMode: !state.isResizeMode })),
+        toggleGridMode: () => set((state) => ({ isGridMode: !state.isGridMode })),
+        
+        toggleSpreadLock: (spreadId) => set((state) => {
+          const newSpreads = state.spreads.map(s => 
+            s.id === spreadId ? { ...s, isLocked: !s.isLocked } : s
+          );
+          const newState = { ...state, spreads: newSpreads };
+          return { spreads: newSpreads, projects: syncProject(newState) };
+        }),
+
+        updateSpreadPlaceholders: (spreadId, placeholders) => set((state) => {
+          const newSpreads = state.spreads.map(s => 
+            s.id === spreadId ? { ...s, customPlaceholders: placeholders, layoutId: 'custom' } : s
+          );
+          const newState = { ...state, spreads: newSpreads };
+          return { spreads: newSpreads, projects: syncProject(newState) };
+        }),
 
         showToast: (message, type = 'success') => set({ toast: { message, type } }),
         clearToast: () => set({ toast: null }),
@@ -380,7 +410,7 @@ export const useProjectStore = create<ProjectState>()(
             const oldImages = Object.values(s.images);
             const newImages: Record<string, MediaItem> = {};
             oldImages.slice(0, L.photoCount).forEach((img, i) => { newImages[L.placeholders[i].id] = img; });
-            return { ...s, layoutId, images: newImages };
+            return { ...s, layoutId, images: newImages, customPlaceholders: undefined };
           });
           const newState = { ...state, spreads: newSpreads };
           return { spreads: newSpreads, projects: syncProject(newState) };

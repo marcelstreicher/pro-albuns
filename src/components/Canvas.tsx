@@ -16,7 +16,9 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
     addPhotoToPlaceholder, removePhotoFromPlaceholder,
     customLayouts, addPhotosToSpread, showToast,
     swapPhotos, setActiveSpread, hasLayoutForPhotoCount,
-    setPendingDraftPhotos, setCurrentView, getCompatibleLayouts
+    setPendingDraftPhotos, setCurrentView, getCompatibleLayouts,
+    isResizeMode, toggleResizeMode, toggleSpreadLock, updateSpreadPlaceholders,
+    isGridMode, toggleGridMode
   } = useProjectStore();
   const activeSpread = spreads[activeSpreadIndex];
 
@@ -43,6 +45,15 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
   const cropDragStart = useRef<{ mx: number, my: number, cropX: number, cropY: number } | null>(null);
   const [liveCanvasCrop, setLiveCanvasCrop] = useState<{ cropX: number, cropY: number, cropScale: number } | null>(null);
   const phRef = useRef<HTMLDivElement | null>(null);
+  const spreadRef = useRef<HTMLDivElement | null>(null);
+
+  // Resize State
+  const [isResizing, setIsResizing] = useState(false);
+  const [resizeType, setResizeType] = useState<string | null>(null);
+  const [resizeStart, setResizeStart] = useState<{ mx: number, my: number, x: number, y: number, w: number, h: number } | null>(null);
+
+  // Grid/Snap State
+  const [snapLines, setSnapLines] = useState<{ v?: number, h?: number, vEdges?: number[], hEdges?: number[] }>({});
 
   const allLayouts = activeSpread ? customLayouts : {};
   const layout = activeSpread ? allLayouts[activeSpread.layoutId] : undefined;
@@ -50,8 +61,12 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
   // Calculate Aspect Ratio of the active placeholder
   const phAspect = useMemo(() => {
     const phId = cropModePlaceholder || selectedPlaceholder;
-    if (!phId || !activeSpread || !layout) return 1.5;
-    const ph = layout.placeholders.find(p => p.id === phId);
+    if (!phId || !activeSpread) return 1.5;
+    
+    // Get placeholders from custom placeholders if available, otherwise from layout
+    const currentPlaceholders = activeSpread.customPlaceholders || layout?.placeholders || [];
+    const ph = currentPlaceholders.find(p => p.id === phId);
+    
     if (!ph) return 1.5;
     const w = (albumConfig.spreadWidth || 600) * (ph.width / 100);
     const h = (albumConfig.spreadHeight || 300) * (ph.height / 100);
@@ -137,26 +152,176 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
     });
     useProjectStore.setState(state => ({
       spreads: state.spreads.map(s =>
-        s.id === activeSpread.id ? { ...s, layoutId: nextLayout.id, images: newImagesMap } : s
+        s.id === activeSpread.id ? { ...s, layoutId: nextLayout.id, images: newImagesMap, customPlaceholders: undefined } : s
       )
     }));
     showToast(`Layout: ${nextLayout.name} (${nextIndex + 1}/${matchingLayouts.length})`, 'info');
   }, [activeSpread, matchingLayouts, currentLayoutIndex, showToast]);
 
+  // Resize Handlers
+  const startResize = (e: React.MouseEvent, type: string, ph: any) => {
+    e.preventDefault(); e.stopPropagation();
+    if (activeSpread.isLocked) return;
+    setIsResizing(true);
+    setResizeType(type);
+    setResizeStart({ mx: e.clientX, my: e.clientY, x: ph.x, y: ph.y, w: ph.width, h: ph.height });
+  };
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!isResizing || !resizeStart || !activeSpread || activeSpread.isLocked) return;
+      const rect = spreadRef.current?.getBoundingClientRect();
+      if (!rect) return;
+
+      const SNAP_TOLERANCE = 1.5;
+      const dx = ((e.clientX - resizeStart.mx) / rect.width) * 100;
+      const dy = ((e.clientY - resizeStart.my) / rect.height) * 100;
+
+      let newX = resizeStart.x;
+      let newY = resizeStart.y;
+      let newW = resizeStart.w;
+      let newH = resizeStart.h;
+
+      if (resizeType?.includes('e')) newW = Math.max(5, Math.min(resizeStart.w + dx, 100 - resizeStart.x));
+      if (resizeType?.includes('s')) newH = Math.max(5, Math.min(resizeStart.h + dy, 100 - resizeStart.y));
+      if (resizeType?.includes('w')) {
+        const proposedW = resizeStart.w - dx;
+        if (proposedW >= 5 && resizeStart.x + dx >= 0) {
+          newW = proposedW;
+          newX = resizeStart.x + dx;
+        }
+      }
+      if (resizeType?.includes('n')) {
+        const proposedH = resizeStart.h - dy;
+        if (proposedH >= 5 && resizeStart.y + dy >= 0) {
+          newH = proposedH;
+          newY = resizeStart.y + dy;
+        }
+      }
+
+      if (resizeType === 'drag') {
+        newX = Math.min(Math.max(0, resizeStart.x + dx), 100 - resizeStart.w);
+        newY = Math.min(Math.max(0, resizeStart.y + dy), 100 - resizeStart.h);
+      }
+
+      // Snapping Logic (only if grid mode is on)
+      const vEdges: number[] = [];
+      const hEdges: number[] = [];
+      if (isGridMode) {
+        const targetsX = [0, 25, 50, 75, 100];
+        const targetsY = [0, 50, 100];
+        const currentPhs = activeSpread.customPlaceholders || layout?.placeholders || [];
+        
+        currentPhs.forEach(p => {
+          if (p.id === selectedPlaceholder) return;
+          targetsX.push(p.x, p.x + p.width, p.x + p.width/2);
+          targetsY.push(p.y, p.y + p.height, p.y + p.height/2);
+        });
+
+        for (const t of targetsX) {
+          if (resizeType === 'drag') {
+            // Snap left edge
+            if (Math.abs(newX - t) < SNAP_TOLERANCE) { newX = t; vEdges.push(t); break; }
+            // Snap right edge
+            if (Math.abs((newX + newW) - t) < SNAP_TOLERANCE) { newX = t - newW; vEdges.push(t); break; }
+            // Snap center
+            if (Math.abs((newX + newW/2) - t) < SNAP_TOLERANCE) { newX = t - newW/2; vEdges.push(t); break; }
+          } else {
+            if (resizeType?.includes('w')) {
+              if (Math.abs(newX - t) < SNAP_TOLERANCE) { newW += (newX - t); newX = t; vEdges.push(t); break; }
+            }
+            if (resizeType?.includes('e')) {
+              if (Math.abs((newX + newW) - t) < SNAP_TOLERANCE) { newW = t - newX; vEdges.push(t); break; }
+            }
+          }
+        }
+        for (const t of targetsY) {
+          if (resizeType === 'drag') {
+            // Snap top edge
+            if (Math.abs(newY - t) < SNAP_TOLERANCE) { newY = t; hEdges.push(t); break; }
+            // Snap bottom edge
+            if (Math.abs((newY + newH) - t) < SNAP_TOLERANCE) { newY = t - newH; hEdges.push(t); break; }
+            // Snap middle
+            if (Math.abs((newY + newH/2) - t) < SNAP_TOLERANCE) { newY = t - newH/2; hEdges.push(t); break; }
+          } else {
+            if (resizeType?.includes('n')) {
+              if (Math.abs(newY - t) < SNAP_TOLERANCE) { newH += (newY - t); newY = t; hEdges.push(t); break; }
+            }
+            if (resizeType?.includes('s')) {
+              if (Math.abs((newY + newH) - t) < SNAP_TOLERANCE) { newH = t - newY; hEdges.push(t); break; }
+            }
+          }
+        }
+      }
+
+      setSnapLines({ vEdges, hEdges });
+      const currentPhs = activeSpread.customPlaceholders || layout?.placeholders || [];
+      const updatedPhs = currentPhs.map(p => 
+        p.id === selectedPlaceholder ? { ...p, x: newX, y: newY, width: newW, height: newH } : p
+      );
+      updateSpreadPlaceholders(activeSpread.id, updatedPhs);
+    };
+
+    const onUp = () => {
+      setIsResizing(false);
+      setResizeStart(null);
+      setResizeType(null);
+      setSnapLines({});
+    };
+
+    if (isResizing) {
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    }
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [isResizing, resizeStart, resizeType, activeSpread, selectedPlaceholder, layout, updateSpreadPlaceholders, isGridMode]);
+
+  // Keyboard Shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'TEXTAREA') return;
-      if (e.key === 'Escape') { setCropModePlaceholder(null); return; }
-      if (e.key === 'ArrowRight') { e.preventDefault(); cycleLayout(1); }
-      else if (e.key === 'ArrowLeft') { e.preventDefault(); cycleLayout(-1); }
-      else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedPlaceholder && activeSpread && !cropModePlaceholder) {
-        removePhotoFromPlaceholder(activeSpread.id, selectedPlaceholder);
-        onSelectPlaceholder(null);
+      const isInput = (e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'TEXTAREA';
+      if (isInput) return;
+
+      switch (e.key) {
+        case 'ArrowLeft':
+          e.preventDefault();
+          setActiveSpread(Math.max(0, activeSpreadIndex - 1));
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          setActiveSpread(Math.min(spreads.length - 1, activeSpreadIndex + 1));
+          break;
+        case 'ArrowUp':
+          e.preventDefault();
+          cycleLayout(-1);
+          break;
+        case 'ArrowDown':
+          e.preventDefault();
+          cycleLayout(1);
+          break;
+        case 'Escape':
+          setCropModePlaceholder(null);
+          break;
+        case 'Delete':
+        case 'Backspace':
+          if (selectedPlaceholder && activeSpread && !cropModePlaceholder) {
+            removePhotoFromPlaceholder(activeSpread.id, selectedPlaceholder);
+            onSelectPlaceholder(null);
+          }
+          break;
       }
     };
+
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedPlaceholder, activeSpread, removePhotoFromPlaceholder, cycleLayout, cropModePlaceholder, onSelectPlaceholder]);
+  }, [
+    activeSpreadIndex, spreads.length, setActiveSpread, cycleLayout,
+    selectedPlaceholder, activeSpread, removePhotoFromPlaceholder, 
+    cropModePlaceholder, onSelectPlaceholder
+  ]);
 
   if (!activeSpread) return <div className="flex-1 canvas-grid flex items-center justify-center">No active spread</div>;
 
@@ -174,6 +339,10 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
     const sourcePhId = e.dataTransfer.getData('sourcePlaceholderId');
     const sourceSpreadId = e.dataTransfer.getData('sourceSpreadId');
     if (sourcePhId && sourceSpreadId === activeSpread?.id && sourcePhId !== placeholderId) {
+      if (activeSpread.isLocked) {
+        showToast('Página bloqueada para alterações', 'warning');
+        return;
+      }
       swapPhotos(activeSpread.id, sourcePhId, placeholderId);
       onSelectPlaceholder(placeholderId);
       return;
@@ -182,6 +351,10 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
     // 2. Filmstrip drop
     const data = e.dataTransfer.getData('application/json');
     if (data && activeSpread) {
+      if (activeSpread.isLocked) {
+        showToast('Página bloqueada para alterações', 'warning');
+        return;
+      }
       try {
         const parsed = JSON.parse(data);
         const item = Array.isArray(parsed) ? parsed[0] : parsed;
@@ -193,6 +366,10 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
     e.preventDefault();
     const data = e.dataTransfer.getData('application/json');
     if (data && activeSpread) {
+      if (activeSpread.isLocked) {
+        showToast('Página bloqueada para alterações', 'warning');
+        return;
+      }
       try {
         const parsed = JSON.parse(data);
         const items = (Array.isArray(parsed) ? parsed : [parsed]) as MediaItem[];
@@ -239,14 +416,39 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
 
       {/* Toolbar */}
       <div className="absolute top-6 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1 p-1 bg-surface-container-high/80 backdrop-blur-xl rounded-full border border-outline-variant/20 shadow-2xl">
-        <button className="w-10 h-10 flex items-center justify-center rounded-full bg-primary text-on-primary shadow-lg" title="Selecionar">
+        <button 
+           className={`w-10 h-10 flex items-center justify-center rounded-full transition-all ${!isResizeMode ? 'bg-primary text-on-primary shadow-lg' : 'text-on-surface-variant hover:bg-surface-variant'}`} 
+           title="Selecionar"
+           onClick={() => isResizeMode && toggleResizeMode()}
+        >
           <span className="material-symbols-outlined">near_me</span>
         </button>
-        <button className="w-10 h-10 flex items-center justify-center rounded-full text-on-surface-variant hover:bg-surface-variant transition-colors" title="Guias">
+        <button 
+           className={`w-10 h-10 flex items-center justify-center rounded-full transition-all ${isResizeMode ? 'bg-primary text-on-primary shadow-lg' : 'text-on-surface-variant hover:bg-surface-variant'}`} 
+           title="Redimensionar"
+           onClick={() => toggleResizeMode()}
+        >
+          <span className="material-symbols-outlined">open_with</span>
+        </button>
+        <button 
+           className={`w-10 h-10 flex items-center justify-center rounded-full transition-all ${isGridMode ? 'bg-primary text-on-primary shadow-lg' : 'text-on-surface-variant hover:bg-surface-variant'}`} 
+           title="Grade e Guias"
+           onClick={() => toggleGridMode()}
+        >
           <span className="material-symbols-outlined">grid_4x4</span>
         </button>
 
-        {matchingLayouts.length > 0 && (
+        <div className="w-px h-6 bg-outline-variant/40 mx-1"></div>
+
+        <button 
+           className={`w-10 h-10 flex items-center justify-center rounded-full transition-all ${activeSpread.isLocked ? 'bg-error/20 text-error' : 'text-on-surface-variant hover:bg-surface-variant'}`} 
+           title={activeSpread.isLocked ? "Desbloquear Lâmina" : "Bloquear Lâmina"}
+           onClick={(e) => { e.stopPropagation(); toggleSpreadLock(activeSpread.id); }}
+        >
+          <span className="material-symbols-outlined">{activeSpread.isLocked ? 'lock' : 'lock_open'}</span>
+        </button>
+
+        {!activeSpread.isLocked && matchingLayouts.length > 0 && (
           <>
             <div className="w-px h-6 bg-outline-variant/40 mx-1"></div>
             <button
@@ -286,6 +488,7 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
 
       {/* Spread */}
       <div
+        ref={spreadRef}
         style={{
           aspectRatio: spreadRatio,
           transform: `scale(${canvasZoom})`,
@@ -295,6 +498,30 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
         onDragOver={e => e.preventDefault()}
         onDrop={handleCanvasDrop}
       >
+        {/* Bleed Lines */}
+        {isGridMode && (
+          <div 
+            className="absolute inset-0 pointer-events-none z-[15] border-[1px] border-dashed border-error/40 m-[-1px]"
+            style={{
+              margin: `${(albumConfig.bleed / albumConfig.spreadHeight) * 100}% ${(albumConfig.bleed / albumConfig.spreadWidth) * 100}%`
+            }}
+          >
+            <div className="absolute top-0 left-0 bg-error/10 text-[8px] text-error px-1 font-bold uppercase tracking-tighter">Sangria</div>
+          </div>
+        )}
+
+        {/* Snap Lines */}
+        {isGridMode && isResizing && (
+          <div className="absolute inset-0 pointer-events-none z-[60]">
+            {snapLines.vEdges?.map((v, i) => (
+              <div key={`v-${i}`} style={{ left: `${v}%` }} className="absolute top-0 bottom-0 w-[1.5px] bg-primary/70 shadow-[0_0_8px_rgba(var(--color-primary-rgb),0.5)]"></div>
+            ))}
+            {snapLines.hEdges?.map((h, i) => (
+              <div key={`h-${i}`} style={{ top: `${h}%` }} className="absolute left-0 right-0 h-[1.5px] bg-primary/70 shadow-[0_0_8px_rgba(var(--color-primary-rgb),0.5)]"></div>
+            ))}
+          </div>
+        )}
+
         {!layout && (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-outline-variant/50 pointer-events-none z-0 border-2 border-dashed border-outline-variant/20 m-8 rounded-xl">
             <span className="material-symbols-outlined text-6xl mb-4">add_photo_alternate</span>
@@ -304,7 +531,7 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
         )}
 
         <div className="absolute inset-0 z-10">
-          {layout?.placeholders.map((ph) => {
+          {(activeSpread.customPlaceholders || layout?.placeholders || []).map((ph) => {
             const image = activeSpread.images[ph.id];
             const isSelected = selectedPlaceholder === ph.id;
             const isCropMode = cropModePlaceholder === ph.id;
@@ -330,6 +557,11 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
                 onDrop={e => handleDrop(e, ph.id)}
                 onDragLeave={() => setDragOverPlaceholder(null)}
                 onClick={e => { e.stopPropagation(); if (!isCropMode) onSelectPlaceholder(ph.id); }}
+                onMouseDown={e => {
+                  if (isResizeMode && !activeSpread.isLocked && !isCropMode) {
+                    startResize(e, 'drag', ph);
+                  }
+                }}
                 onDoubleClick={e => {
                   e.stopPropagation();
                   if (image) { setCropModePlaceholder(ph.id); onSelectPlaceholder(ph.id); }
@@ -368,9 +600,25 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
                         objectFit: 'cover',
                         transformOrigin: 'center',
                         transform: `translate(${tx}%, ${ty}%) scale(${crop.cropScale})`,
-                        transition: isDraggingCrop.current ? 'none' : 'transform 0.1s ease',
+                        transition: isDraggingCrop.current || isResizing ? 'none' : 'transform 0.1s ease',
                       }}
                     />
+                    {/* Resize Handles */}
+                    {isSelected && isResizeMode && !activeSpread.isLocked && (
+                      <div className="absolute inset-0 z-40 pointer-events-none">
+                         {/* Corners */}
+                         <div onMouseDown={(e) => startResize(e, 'nw', ph)} className="absolute -top-1.5 -left-1.5 w-3 h-3 bg-white border-2 border-primary rounded-full cursor-nwse-resize shadow-sm pointer-events-auto" />
+                         <div onMouseDown={(e) => startResize(e, 'ne', ph)} className="absolute -top-1.5 -right-1.5 w-3 h-3 bg-white border-2 border-primary rounded-full cursor-nesw-resize shadow-sm pointer-events-auto" />
+                         <div onMouseDown={(e) => startResize(e, 'sw', ph)} className="absolute -bottom-1.5 -left-1.5 w-3 h-3 bg-white border-2 border-primary rounded-full cursor-nesw-resize shadow-sm pointer-events-auto" />
+                         <div onMouseDown={(e) => startResize(e, 'se', ph)} className="absolute -bottom-1.5 -right-1.5 w-3 h-3 bg-white border-2 border-primary rounded-full cursor-nwse-resize shadow-sm pointer-events-auto" />
+                         
+                         {/* Edges */}
+                         <div onMouseDown={(e) => startResize(e, 'n', ph)} className="absolute -top-1 left-2 right-2 h-2 cursor-ns-resize hover:bg-primary/30 pointer-events-auto" />
+                         <div onMouseDown={(e) => startResize(e, 's', ph)} className="absolute -bottom-1 left-2 right-2 h-2 cursor-ns-resize hover:bg-primary/30 pointer-events-auto" />
+                         <div onMouseDown={(e) => startResize(e, 'w', ph)} className="absolute top-2 bottom-2 -left-1 w-2 cursor-ew-resize hover:bg-primary/30 pointer-events-auto" />
+                         <div onMouseDown={(e) => startResize(e, 'e', ph)} className="absolute top-2 bottom-2 -right-1 w-2 cursor-ew-resize hover:bg-primary/30 pointer-events-auto" />
+                      </div>
+                    )}
                     {/* Crop mode grab overlay */}
                     {isCropMode && (
                       <div
@@ -397,7 +645,9 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
         </div>
 
         {/* Spine */}
-        <div className="absolute left-1/2 top-0 bottom-0 w-[2px] bg-gradient-to-r from-transparent via-black/15 to-transparent z-20 pointer-events-none"></div>
+        <div className={`absolute left-1/2 top-0 bottom-0 w-[2px] z-20 pointer-events-none ${isGridMode ? 'bg-error/40' : 'bg-gradient-to-r from-transparent via-black/15 to-transparent'}`}>
+           {isGridMode && <span className="absolute top-0 left-1/2 -translate-x-1/2 bg-error text-white text-[7px] px-1 font-bold rounded-b">CENTRO</span>}
+        </div>
         <div className="absolute left-1/2 top-0 bottom-0 w-8 -translate-x-1/2 bg-gradient-to-r from-transparent via-white/30 to-transparent z-20 pointer-events-none mix-blend-overlay"></div>
       </div>
 

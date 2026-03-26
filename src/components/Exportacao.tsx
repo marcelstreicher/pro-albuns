@@ -14,6 +14,24 @@ const Exportacao: React.FC = () => {
   const exportRef = useRef<HTMLDivElement>(null);
   const [captureSpreadIdx, setCaptureSpreadIdx] = useState<number | null>(null);
 
+  // Keyboard Navigation
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore if user is typing in an input/textarea
+      if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') return;
+
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        setActiveSpread(Math.max(0, activeSpreadIndex - 1));
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        setActiveSpread(Math.min(spreads.length - 1, activeSpreadIndex + 1));
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeSpreadIndex, spreads.length, setActiveSpread]);
+
   const currentSpread = spreads[activeSpreadIndex];
   const currentLayout = currentSpread ? customLayouts[currentSpread.layoutId] : undefined;
 

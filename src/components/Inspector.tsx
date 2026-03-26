@@ -26,7 +26,7 @@ const Inspector: React.FC<InspectorProps> = ({ selectedPlaceholder, onCropChange
   const phAspect = useMemo(() => {
     if (!selectedPlaceholder || !activeSpread) return 1.5; // fallback
     const L = customLayouts[activeSpread.layoutId];
-    const ph = L?.placeholders.find(p => p.id === selectedPlaceholder);
+    const ph = (activeSpread.customPlaceholders || L?.placeholders || []).find(p => p.id === selectedPlaceholder);
     if (!ph) return 1.5;
     
     // Width in mm
