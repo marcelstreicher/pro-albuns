@@ -85,11 +85,25 @@ interface ProjectState {
   toast: Toast | null;
   isResizeMode: boolean;
   isGridMode: boolean;
+  designerPlaceholders: any[];
+
+  // History Stacks
+  editorHistory: Spread[][];
+  editorFuture: Spread[][];
+  designerHistory: any[][];
+  designerFuture: any[][];
 
   toggleResizeMode: () => void;
   toggleGridMode: () => void;
   toggleSpreadLock: (spreadId: string) => void;
-  updateSpreadPlaceholders: (spreadId: string, placeholders: Placeholder[]) => void;
+  updateSpreadPlaceholders: (spreadId: string, placeholders: Placeholder[], skipHistory?: boolean) => void;
+
+  undoEditor: () => void;
+  redoEditor: () => void;
+  saveEditorHistory: () => void;
+  undoDesigner: () => void;
+  redoDesigner: () => void;
+  saveDesignerHistory: (placeholders: any[]) => void;
 
   setCurrentView: (view: ViewType) => void;
   showToast: (message: string, type?: ToastType) => void;
@@ -120,8 +134,8 @@ interface ProjectState {
   reorderSpreads: (sourceIndex: number, targetIndex: number) => void;
   addSpread: () => void;
   deleteSpread: (index: number) => void;
-  updatePhotoAspect: (spreadId: string, placeholderId: string, ratio: number) => void;
-  updatePhotoCrop: (spreadId: string, placeholderId: string, x: number, y: number, scale: number) => void;
+  updatePhotoAspect: (spreadId: string, placeholderId: string, ratio: number, skipHistory?: boolean) => void;
+  updatePhotoCrop: (spreadId: string, placeholderId: string, x: number, y: number, scale: number, skipHistory?: boolean) => void;
 
   // Bindery & Template Actions
   addBindery: (name: string) => void;
@@ -176,25 +190,114 @@ export const useProjectStore = create<ProjectState>()(
         toast: null as Toast | null,
         isResizeMode: false,
         isGridMode: false,
+        designerPlaceholders: [] as any[],
+        editorHistory: [] as Spread[][],
+        editorFuture: [] as Spread[][],
+        designerHistory: [] as any[][],
+        designerFuture: [] as any[][],
 
         toggleResizeMode: () => set((state) => ({ isResizeMode: !state.isResizeMode })),
         toggleGridMode: () => set((state) => ({ isGridMode: !state.isGridMode })),
         
-        toggleSpreadLock: (spreadId) => set((state) => {
-          const newSpreads = state.spreads.map(s => 
-            s.id === spreadId ? { ...s, isLocked: !s.isLocked } : s
-          );
-          const newState = { ...state, spreads: newSpreads };
-          return { spreads: newSpreads, projects: syncProject(newState) };
+        saveEditorHistory: () => {
+          const state = get();
+          const currentSnap = JSON.stringify(state.spreads);
+          const lastSnap = state.editorHistory.length > 0 
+            ? JSON.stringify(state.editorHistory[state.editorHistory.length - 1]) 
+            : null;
+          
+          if (currentSnap === lastSnap) return;
+
+          const snapshot = JSON.parse(currentSnap);
+          set({
+            editorHistory: [...state.editorHistory.slice(-50), snapshot],
+            editorFuture: []
+          });
+        },
+
+        undoEditor: () => set((state) => {
+          if (state.editorHistory.length === 0) {
+            console.warn('⚠️ [History] Undo ignored: History stack is empty');
+            return state;
+          }
+          const current = JSON.parse(JSON.stringify(state.spreads));
+          const previous = state.editorHistory[state.editorHistory.length - 1];
+          const newHistory = state.editorHistory.slice(0, -1);
+          
+          const newState = { 
+            ...state, 
+            spreads: previous, 
+            editorHistory: newHistory, 
+            editorFuture: [current, ...state.editorFuture].slice(0, 50) 
+          };
+          return { ...newState, projects: syncProject(newState) };
         }),
 
-        updateSpreadPlaceholders: (spreadId, placeholders) => set((state) => {
-          const newSpreads = state.spreads.map(s => 
-            s.id === spreadId ? { ...s, customPlaceholders: placeholders, layoutId: 'custom' } : s
-          );
-          const newState = { ...state, spreads: newSpreads };
-          return { spreads: newSpreads, projects: syncProject(newState) };
+        redoEditor: () => set((state) => {
+          if (state.editorFuture.length === 0) {
+            console.warn('⚠️ [History] Redo ignored: Future stack is empty');
+            return state;
+          }
+          const current = JSON.parse(JSON.stringify(state.spreads));
+          const next = state.editorFuture[0];
+          const newFuture = state.editorFuture.slice(1);
+          
+          const newState = { 
+            ...state, 
+            spreads: next, 
+            editorHistory: [...state.editorHistory, current].slice(-50), 
+            editorFuture: newFuture 
+          };
+          return { ...newState, projects: syncProject(newState) };
         }),
+
+        undoDesigner: () => set((state) => {
+          if (state.designerHistory.length === 0) return state;
+          const current = JSON.parse(JSON.stringify(state.designerPlaceholders));
+          const previous = state.designerHistory[state.designerHistory.length - 1];
+          return { 
+            designerPlaceholders: previous,
+            designerHistory: state.designerHistory.slice(0, -1), 
+            designerFuture: [current, ...state.designerFuture].slice(0, 50) 
+          };
+        }),
+        redoDesigner: () => set((state) => {
+          if (state.designerFuture.length === 0) return state;
+          const current = JSON.parse(JSON.stringify(state.designerPlaceholders));
+          const next = state.designerFuture[0];
+          return { 
+            designerPlaceholders: next,
+            designerFuture: state.designerFuture.slice(1), 
+            designerHistory: [...state.designerHistory, current].slice(-50) 
+          };
+        }),
+        saveDesignerHistory: (phs) => set((state) => ({
+          designerHistory: [...state.designerHistory.slice(-50), JSON.parse(JSON.stringify(state.designerPlaceholders))],
+          designerFuture: [],
+          designerPlaceholders: phs
+        })),
+        
+        toggleSpreadLock: (spreadId) => {
+          get().saveEditorHistory();
+          set((state) => {
+            const newSpreads = state.spreads.map(s => 
+              s.id === spreadId ? { ...s, isLocked: !s.isLocked } : s
+            );
+            const newState = { ...state, spreads: newSpreads };
+            return { spreads: newSpreads, projects: syncProject(newState) };
+          });
+        },
+
+        updateSpreadPlaceholders: (spreadId, placeholders, skipHistory = false) => {
+          if (!skipHistory) get().saveEditorHistory();
+          set((state) => {
+            const newSpreads = state.spreads.map(s => 
+              s.id === spreadId ? { ...s, customPlaceholders: placeholders, layoutId: 'custom' } : s
+            );
+            const newState = { ...state, spreads: newSpreads };
+            return { spreads: newSpreads, projects: syncProject(newState) };
+          });
+        },
 
         showToast: (message, type = 'success') => set({ toast: { message, type } }),
         clearToast: () => set({ toast: null }),
@@ -327,113 +430,131 @@ export const useProjectStore = create<ProjectState>()(
 
         setActiveSpread: (index) => set({ activeSpreadIndex: index }),
 
-        addPhotosToSpread: (spreadId, items) => set((state) => {
-          const newSpreads = state.spreads.map(s => {
-            if (s.id !== spreadId) return s;
-            const currentImages = Object.values(s.images);
-            const totalPhotos = currentImages.length + items.length;
-            const allLayouts = Object.values(state.customLayouts);
-            const format = state.getProjectFormat();
+        addPhotosToSpread: (spreadId, items) => {
+          get().saveEditorHistory();
+          set((state) => {
+            const newSpreads = state.spreads.map(s => {
+              if (s.id !== spreadId) return s;
+              const currentImages = Object.values(s.images);
+              const totalPhotos = currentImages.length + items.length;
+              const allLayouts = Object.values(state.customLayouts);
+              const format = state.getProjectFormat();
 
-            const matchingLayout = allLayouts.find(L => 
-              L.photoCount === totalPhotos && 
-              (!L.format || L.format === 'all' || L.format === format)
-            );
+              const matchingLayout = allLayouts.find(L => 
+                L.photoCount === totalPhotos && 
+                (!L.format || L.format === 'all' || L.format === format)
+              );
 
-            if (!matchingLayout) return s;
-            
-            const matchingLayoutId = matchingLayout.id;
-            const newImagesMap: Record<string, MediaItem> = {};
-            const combined = [...currentImages, ...items];
-            combined.forEach((img, i) => { if (matchingLayout.placeholders[i]) newImagesMap[matchingLayout.placeholders[i].id] = img; });
-            return { ...s, layoutId: matchingLayoutId, images: newImagesMap };
+              if (!matchingLayout) return s;
+              
+              const matchingLayoutId = matchingLayout.id;
+              const newImagesMap: Record<string, MediaItem> = {};
+              const combined = [...currentImages, ...items];
+              combined.forEach((img, i) => { if (matchingLayout.placeholders[i]) newImagesMap[matchingLayout.placeholders[i].id] = img; });
+              return { ...s, layoutId: matchingLayoutId, images: newImagesMap, customPlaceholders: undefined };
+            });
+            const newState = { ...state, spreads: newSpreads };
+            return { spreads: newSpreads, projects: syncProject(newState) };
           });
-          const newState = { ...state, spreads: newSpreads };
-          return { spreads: newSpreads, projects: syncProject(newState) };
-        }),
+        },
 
-        removeMedia: (paths) => set((state) => {
-          const pathsSet = new Set(paths);
-          const newMedia = state.media.filter(m => !pathsSet.has(m.path));
-          const newSpreads = state.spreads.map(s => {
-            const newImages: Record<string, MediaItem> = {};
-            Object.entries(s.images).forEach(([phId, img]) => { if (!pathsSet.has(img.path)) newImages[phId] = img; });
-            return { ...s, images: newImages };
+        removeMedia: (paths) => {
+          get().saveEditorHistory();
+          set((state) => {
+            const pathsSet = new Set(paths);
+            const newMedia = state.media.filter(m => !pathsSet.has(m.path));
+            const newSpreads = state.spreads.map(s => {
+              const newImages: Record<string, MediaItem> = {};
+              Object.entries(s.images).forEach(([phId, img]) => { if (!pathsSet.has(img.path)) newImages[phId] = img; });
+              return { ...s, images: newImages };
+            });
+            const newState = { ...state, media: newMedia, spreads: newSpreads };
+            return { media: newMedia, spreads: newSpreads, projects: syncProject(newState) };
           });
-          const newState = { ...state, media: newMedia, spreads: newSpreads };
-          return { media: newMedia, spreads: newSpreads, projects: syncProject(newState) };
-        }),
+        },
 
-        addPhotoToPlaceholder: (spreadId, phId, item) => set((state) => {
-          const newSpreads = state.spreads.map(s => {
-            if (s.id !== spreadId) return s;
-            return { ...s, images: { ...s.images, [phId]: item } };
+        addPhotoToPlaceholder: (spreadId, phId, item) => {
+          get().saveEditorHistory();
+          set((state) => {
+            const newSpreads = state.spreads.map(s => {
+              if (s.id !== spreadId) return s;
+              return { ...s, images: { ...s.images, [phId]: item } };
+            });
+            const newState = { ...state, spreads: newSpreads };
+            return { spreads: newSpreads, projects: syncProject(newState) };
           });
-          const newState = { ...state, spreads: newSpreads };
-          return { spreads: newSpreads, projects: syncProject(newState) };
-        }),
+        },
 
-        removePhotoFromPlaceholder: (spreadId, phId) => set((state) => {
-          const newSpreads = state.spreads.map(s => {
-            if (s.id !== spreadId) return s;
-            
-            const newImages = { ...s.images };
-            delete newImages[phId];
+        removePhotoFromPlaceholder: (spreadId, phId) => {
+          get().saveEditorHistory();
+          set((state) => {
+            const newSpreads = state.spreads.map(s => {
+              if (s.id !== spreadId) return s;
+              
+              const newImages = { ...s.images };
+              delete newImages[phId];
 
-            if (state.albumConfig.autoLayoutOnRemove) {
-               const photos = Object.values(newImages);
-               const format = state.getProjectFormat();
-               const allLayouts = Object.values(state.customLayouts);
-               const matchingLayout = allLayouts.find(L => 
-                 L.photoCount === photos.length && 
-                 (!L.format || L.format === 'all' || L.format === format)
-               );
+              if (state.albumConfig.autoLayoutOnRemove) {
+                const photos = Object.values(newImages);
+                const format = state.getProjectFormat();
+                const allLayouts = Object.values(state.customLayouts);
+                const matchingLayout = allLayouts.find(L => 
+                  L.photoCount === photos.length && 
+                  (!L.format || L.format === 'all' || L.format === format)
+                );
 
-               if (matchingLayout) {
-                 const updatedImages: Record<string, MediaItem> = {};
-                 photos.forEach((img, i) => {
-                   if (matchingLayout.placeholders[i]) updatedImages[matchingLayout.placeholders[i].id] = img;
-                 });
-                 return { ...s, layoutId: matchingLayout.id, images: updatedImages };
-               }
-            }
-            return { ...s, images: newImages };
+                if (matchingLayout) {
+                  const updatedImages: Record<string, MediaItem> = {};
+                  photos.forEach((img, i) => {
+                    if (matchingLayout.placeholders[i]) updatedImages[matchingLayout.placeholders[i].id] = img;
+                  });
+                  return { ...s, layoutId: matchingLayout.id, images: updatedImages, customPlaceholders: undefined };
+                }
+              }
+              return { ...s, images: newImages };
+            });
+            const newState = { ...state, spreads: newSpreads };
+            return { spreads: newSpreads, projects: syncProject(newState) };
           });
-          const newState = { ...state, spreads: newSpreads };
-          return { spreads: newSpreads, projects: syncProject(newState) };
-        }),
+        },
 
-        setSpreadLayout: (spreadId, layoutId) => set((state) => {
-          const newSpreads = state.spreads.map(s => {
-            if (s.id !== spreadId) return s;
-            const L = state.customLayouts[layoutId];
-            const oldImages = Object.values(s.images);
-            const newImages: Record<string, MediaItem> = {};
-            oldImages.slice(0, L.photoCount).forEach((img, i) => { newImages[L.placeholders[i].id] = img; });
-            return { ...s, layoutId, images: newImages, customPlaceholders: undefined };
+        setSpreadLayout: (spreadId, layoutId) => {
+          get().saveEditorHistory();
+          set((state) => {
+            const newSpreads = state.spreads.map(s => {
+              if (s.id !== spreadId) return s;
+              const L = state.customLayouts[layoutId];
+              const oldImages = Object.values(s.images);
+              const newImages: Record<string, MediaItem> = {};
+              oldImages.slice(0, L.photoCount).forEach((img, i) => { newImages[L.placeholders[i].id] = img; });
+              return { ...s, layoutId, images: newImages, customPlaceholders: undefined };
+            });
+            const newState = { ...state, spreads: newSpreads };
+            return { spreads: newSpreads, projects: syncProject(newState) };
           });
-          const newState = { ...state, spreads: newSpreads };
-          return { spreads: newSpreads, projects: syncProject(newState) };
-        }),
+        },
 
-        swapPhotos: (spreadId, fromPhId, toPhId) => set((state) => {
-          const newSpreads = state.spreads.map(s => {
-            if (s.id !== spreadId) return s;
-            const fromImg = s.images[fromPhId];
-            const toImg = s.images[toPhId];
-            const newImages = { ...s.images };
-            
-            if (toImg) newImages[fromPhId] = toImg;
-            else delete newImages[fromPhId];
-            
-            if (fromImg) newImages[toPhId] = fromImg;
-            else delete newImages[toPhId];
-            
-            return { ...s, images: newImages };
+        swapPhotos: (spreadId, fromPhId, toPhId) => {
+          get().saveEditorHistory();
+          set((state) => {
+            const newSpreads = state.spreads.map(s => {
+              if (s.id !== spreadId) return s;
+              const fromImg = s.images[fromPhId];
+              const toImg = s.images[toPhId];
+              const newImages = { ...s.images };
+              
+              if (toImg) newImages[fromPhId] = toImg;
+              else delete newImages[fromPhId];
+              
+              if (fromImg) newImages[toPhId] = fromImg;
+              else delete newImages[toPhId];
+              
+              return { ...s, images: newImages };
+            });
+            const newState = { ...state, spreads: newSpreads };
+            return { spreads: newSpreads, projects: syncProject(newState) };
           });
-          const newState = { ...state, spreads: newSpreads };
-          return { spreads: newSpreads, projects: syncProject(newState) };
-        }),
+        },
 
         saveCustomLayout: (L) => set((state) => ({
           customLayouts: { ...state.customLayouts, [L.id]: L }
@@ -475,60 +596,75 @@ export const useProjectStore = create<ProjectState>()(
           layoutDesignerPendingCount: photos.length
         }),
 
-        reorderSpreads: (src: number, dst: number) => set((state) => {
-          const newSpreads = [...state.spreads];
-          const [moved] = newSpreads.splice(src, 1);
-          newSpreads.splice(dst, 0, moved);
-          let newActive = state.activeSpreadIndex;
-          if (src === state.activeSpreadIndex) newActive = dst;
-          else if (state.activeSpreadIndex > src && state.activeSpreadIndex <= dst) newActive--;
-          else if (state.activeSpreadIndex < src && state.activeSpreadIndex >= dst) newActive++;
-          const newState = { ...state, spreads: newSpreads, activeSpreadIndex: newActive };
-          return { spreads: newSpreads, activeSpreadIndex: newActive, projects: syncProject(newState) };
-        }),
+        reorderSpreads: (src, dst) => {
+          get().saveEditorHistory();
+          set((state) => {
+            const newSpreads = [...state.spreads];
+            const [moved] = newSpreads.splice(src, 1);
+            newSpreads.splice(dst, 0, moved);
+            let newActive = state.activeSpreadIndex;
+            if (src === state.activeSpreadIndex) newActive = dst;
+            else if (state.activeSpreadIndex > src && state.activeSpreadIndex <= dst) newActive--;
+            else if (state.activeSpreadIndex < src && state.activeSpreadIndex >= dst) newActive++;
+            const newState = { ...state, spreads: newSpreads, activeSpreadIndex: newActive };
+            return { spreads: newSpreads, activeSpreadIndex: newActive, projects: syncProject(newState) };
+          });
+        },
 
-        addSpread: () => set((state) => {
-          const nextId = (Math.max(...state.spreads.map(s => parseInt(s.id)), 0) + 1).toString();
-          const newSpreads = [...state.spreads, { id: nextId, images: {}, layoutId: '' }];
-          const newConfig = { ...state.albumConfig, numPages: (state.albumConfig.numPages || 0) + 2 };
-          const newState = { ...state, spreads: newSpreads, albumConfig: newConfig };
-          return { spreads: newSpreads, albumConfig: newConfig, projects: syncProject(newState) };
-        }),
+        addSpread: () => {
+          get().saveEditorHistory();
+          set((state) => {
+            const nextId = (Math.max(...state.spreads.map(s => parseInt(s.id)), 0) + 1).toString();
+            const newSpreads = [...state.spreads, { id: nextId, images: {}, layoutId: '' }];
+            const newConfig = { ...state.albumConfig, numPages: (state.albumConfig.numPages || 0) + 2 };
+            const newState = { ...state, spreads: newSpreads, albumConfig: newConfig, activeSpreadIndex: newSpreads.length - 1 };
+            return { spreads: newSpreads, albumConfig: newConfig, activeSpreadIndex: newSpreads.length - 1, projects: syncProject(newState) };
+          });
+        },
 
-        deleteSpread: (idx: number) => set((state) => {
-          if (state.spreads.length <= 1) return state;
-          const newSpreads = [...state.spreads];
-          newSpreads.splice(idx, 1);
-          let newActive = state.activeSpreadIndex;
-          if (newActive >= newSpreads.length) newActive = newSpreads.length - 1;
-          const newConfig = { ...state.albumConfig, numPages: Math.max(0, (state.albumConfig.numPages || 0) - 2) };
-          const newState = { ...state, spreads: newSpreads, activeSpreadIndex: newActive, albumConfig: newConfig };
-          return { spreads: newSpreads, activeSpreadIndex: newActive, albumConfig: newConfig, projects: syncProject(newState) };
-        }),
+        deleteSpread: (idx) => {
+          get().saveEditorHistory();
+          set((state) => {
+            if (state.spreads.length <= 1) return state;
+            const newSpreads = [...state.spreads];
+            newSpreads.splice(idx, 1);
+            let newActive = state.activeSpreadIndex;
+            if (newActive >= newSpreads.length) newActive = newSpreads.length - 1;
+            const newConfig = { ...state.albumConfig, numPages: Math.max(0, (state.albumConfig.numPages || 0) - 2) };
+            const newState = { ...state, spreads: newSpreads, activeSpreadIndex: newActive, albumConfig: newConfig };
+            return { spreads: newSpreads, activeSpreadIndex: newActive, albumConfig: newConfig, projects: syncProject(newState) };
+          });
+        },
 
         clearPendingDraftPhotos: () => set({ pendingDraftPhotos: null, layoutDesignerPendingCount: null }),
 
-        updatePhotoAspect: (spreadId, phId, ratio) => set((state) => {
-          const newSpreads = state.spreads.map(s => {
-            if (s.id !== spreadId) return s;
-            const img = s.images[phId];
-            if (!img || img.aspectRatio === ratio) return s;
-            return { ...s, images: { ...s.images, [phId]: { ...img, aspectRatio: ratio } } };
+        updatePhotoAspect: (spreadId, phId, ratio, skipHistory = false) => {
+          if (!skipHistory) get().saveEditorHistory();
+          set((state) => {
+            const newSpreads = state.spreads.map(s => {
+              if (s.id !== spreadId) return s;
+              const img = s.images[phId];
+              if (!img || img.aspectRatio === ratio) return s;
+              return { ...s, images: { ...s.images, [phId]: { ...img, aspectRatio: ratio } } };
+            });
+            const newState = { ...state, spreads: newSpreads };
+            return { spreads: newSpreads, projects: syncProject(newState) };
           });
-          const newState = { ...state, spreads: newSpreads };
-          return { spreads: newSpreads, projects: syncProject(newState) };
-        }),
+        },
 
-        updatePhotoCrop: (spreadId, phId, x, y, s) => set((state) => {
-          const newSpreads = state.spreads.map(spr => {
-            if (spr.id !== spreadId) return spr;
-            const img = spr.images[phId];
-            if (!img) return spr;
-            return { ...spr, images: { ...spr.images, [phId]: { ...img, cropX: x, cropY: y, cropScale: s } } };
+        updatePhotoCrop: (spreadId, phId, x, y, s, skipHistory = false) => {
+          if (!skipHistory) get().saveEditorHistory();
+          set((state) => {
+            const newSpreads = state.spreads.map(spr => {
+              if (spr.id !== spreadId) return spr;
+              const img = spr.images[phId];
+              if (!img) return spr;
+              return { ...spr, images: { ...spr.images, [phId]: { ...img, cropX: x, cropY: y, cropScale: s } } };
+            });
+            const newState = { ...state, spreads: newSpreads };
+            return { spreads: newSpreads, projects: syncProject(newState) };
           });
-          const newState = { ...state, spreads: newSpreads };
-          return { spreads: newSpreads, projects: syncProject(newState) };
-        }),
+        },
 
         addBindery: (name) => set((state) => ({
           binderies: [...state.binderies, { id: crypto.randomUUID(), name }]

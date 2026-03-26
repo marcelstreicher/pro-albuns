@@ -18,7 +18,7 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
     swapPhotos, setActiveSpread, hasLayoutForPhotoCount,
     setPendingDraftPhotos, setCurrentView, getCompatibleLayouts,
     isResizeMode, toggleResizeMode, toggleSpreadLock, updateSpreadPlaceholders,
-    isGridMode, toggleGridMode
+    isGridMode, toggleGridMode, undoEditor, redoEditor
   } = useProjectStore();
   const activeSpread = spreads[activeSpreadIndex];
 
@@ -36,7 +36,7 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
     if (naturalWidth && naturalHeight) {
       const ratio = naturalWidth / naturalHeight;
       setDetectedImgAspects(prev => ({ ...prev, [placeholderId]: ratio }));
-      if (activeSpread) useProjectStore.getState().updatePhotoAspect(activeSpread.id, placeholderId, ratio);
+      if (activeSpread) useProjectStore.getState().updatePhotoAspect(activeSpread.id, placeholderId, ratio, true);
     }
   };
 
@@ -113,6 +113,10 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
   const handleCropDragStart = (e: React.MouseEvent) => {
     e.preventDefault(); e.stopPropagation();
     if (!liveCanvasCrop) return;
+
+    // CAPTURE HISTORY AT START OF CROP PAN
+    useProjectStore.getState().saveEditorHistory();
+
     isDraggingCrop.current = true;
     cropDragStart.current = { mx: e.clientX, my: e.clientY, cropX: liveCanvasCrop.cropX, cropY: liveCanvasCrop.cropY };
   };
@@ -131,7 +135,8 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
     };
     const onUp = () => {
       if (isDraggingCrop.current && liveCanvasCrop && cropModePlaceholder && activeSpread) {
-        useProjectStore.getState().updatePhotoCrop(activeSpread.id, cropModePlaceholder, liveCanvasCrop.cropX, liveCanvasCrop.cropY, liveCanvasCrop.cropScale);
+        // Skip history save because we already saved it onMouseDown
+        useProjectStore.getState().updatePhotoCrop(activeSpread.id, cropModePlaceholder, liveCanvasCrop.cropX, liveCanvasCrop.cropY, liveCanvasCrop.cropScale, true);
       }
       isDraggingCrop.current = false;
       cropDragStart.current = null;
@@ -162,6 +167,10 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
   const startResize = (e: React.MouseEvent, type: string, ph: any) => {
     e.preventDefault(); e.stopPropagation();
     if (activeSpread.isLocked) return;
+    
+    // CAPTURE HISTORY AT START OF INTERACTION
+    useProjectStore.getState().saveEditorHistory();
+    
     setIsResizing(true);
     setResizeType(type);
     setResizeStart({ mx: e.clientX, my: e.clientY, x: ph.x, y: ph.y, w: ph.width, h: ph.height });
@@ -259,7 +268,7 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
       const updatedPhs = currentPhs.map(p => 
         p.id === selectedPlaceholder ? { ...p, x: newX, y: newY, width: newW, height: newH } : p
       );
-      updateSpreadPlaceholders(activeSpread.id, updatedPhs);
+      updateSpreadPlaceholders(activeSpread.id, updatedPhs, true); // true = skipHistory
     };
 
     const onUp = () => {
@@ -301,6 +310,24 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
         case 'ArrowDown':
           e.preventDefault();
           cycleLayout(1);
+          break;
+        case 'z':
+        case 'Z':
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            if (e.shiftKey) {
+              redoEditor();
+            } else {
+              undoEditor();
+            }
+          }
+          break;
+        case 'y':
+        case 'Y':
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            redoEditor();
+          }
           break;
         case 'Escape':
           setCropModePlaceholder(null);

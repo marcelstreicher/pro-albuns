@@ -19,7 +19,10 @@ const generateId = () => Math.random().toString(36).substr(2, 9);
 const SNAP_TOLERANCE = 1.5; // percent
 
 const LayoutDesigner: React.FC = () => {
-  const { albumConfig, customLayouts, setCurrentView, pendingDraftPhotos, deleteCustomLayout } = useProjectStore();
+  const { 
+    albumConfig, customLayouts, setCurrentView, pendingDraftPhotos, deleteCustomLayout,
+    designerPlaceholders, saveDesignerHistory, undoDesigner, redoDesigner
+  } = useProjectStore();
   const [placeholders, setPlaceholders] = useState<DraftPlaceholder[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editingPresetId, setEditingPresetId] = useState<string | null>(null);
@@ -65,24 +68,51 @@ const LayoutDesigner: React.FC = () => {
      return { w: 60, h: 30 }; // 30x30 pages -> 60x30 spread
   };
 
-  // Keydown listener for Deletion
+  // Keydown listener for Deletion & Undo/Redo
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'TEXTAREA') return;
+      
+      // Delete
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId) {
-        setPlaceholders(prev => prev.filter(p => p.id !== selectedId));
+        const next = placeholders.filter(p => p.id !== selectedId);
+        saveDesignerHistory(next);
+        setPlaceholders(next);
         setSelectedId(null);
+      }
+
+      // Undo / Redo
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key === 'z' || e.key === 'Z') {
+          e.preventDefault();
+          if (e.shiftKey) redoDesigner();
+          else undoDesigner();
+        } else if (e.key === 'y' || e.key === 'Y') {
+          e.preventDefault();
+          redoDesigner();
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedId]);
+  }, [selectedId, placeholders, undoDesigner, redoDesigner, saveDesignerHistory]);
 
-  // Initial Format Sync
+  // Initial Format & History Sync
   useEffect(() => {
     const format = useProjectStore.getState().getProjectFormat();
     setDesignerFormat(format);
+    // Initialize store with current placeholders if empty
+    if (designerPlaceholders.length === 0 && placeholders.length > 0) {
+      saveDesignerHistory(placeholders);
+    }
   }, []);
+
+  // Sync local placeholders when history changes (Undo/Redo)
+  useEffect(() => {
+    if (JSON.stringify(designerPlaceholders) !== JSON.stringify(placeholders)) {
+      setPlaceholders(designerPlaceholders);
+    }
+  }, [designerPlaceholders]);
 
   useEffect(() => {
     const state = useProjectStore.getState();
@@ -105,13 +135,14 @@ const LayoutDesigner: React.FC = () => {
                y: r * cellH + 2,
                width: cellW - 4,
                height: cellH - 4,
-               proportionLock: 'custom'
+               proportionLock: 'custom' as const
             });
             index++;
          }
       }
       
       setPlaceholders(newPlaceholders);
+      saveDesignerHistory(newPlaceholders);
       useProjectStore.setState({ layoutDesignerPendingCount: null });
     }
   }, []);
@@ -353,6 +384,9 @@ const LayoutDesigner: React.FC = () => {
     };
 
     const handleMouseUp = () => {
+      if (isDragging) {
+        saveDesignerHistory(placeholders);
+      }
       setIsDragging(false);
       setStartSnapshot(null);
       setSnapLines({});
@@ -387,16 +421,20 @@ const LayoutDesigner: React.FC = () => {
   };
 
   const handleAddPlaceholder = () => {
-    setPlaceholders([...placeholders, {
+    const next: DraftPlaceholder[] = [...placeholders, {
       id: generateId(),
       x: 30, y: 30, width: 40, height: 40,
-      proportionLock: 'custom'
-    }]);
+      proportionLock: 'custom' as const
+    }];
+    saveDesignerHistory(next);
+    setPlaceholders(next);
   };
 
   const handleDeleteSelected = () => {
     if (selectedId) {
-      setPlaceholders(placeholders.filter(p => p.id !== selectedId));
+      const next = placeholders.filter(p => p.id !== selectedId);
+      saveDesignerHistory(next);
+      setPlaceholders(next);
       setSelectedId(null);
       setContextMenu(null);
     }
@@ -405,12 +443,14 @@ const LayoutDesigner: React.FC = () => {
   const handleDuplicate = (phId: string) => {
     const source = placeholders.find(p => p.id === phId);
     if (!source) return;
-    setPlaceholders([...placeholders, {
+    const next = [...placeholders, {
       ...source,
       id: generateId(),
       x: Math.min(source.x + 2, 100 - source.width),
       y: Math.min(source.y + 2, 100 - source.height)
-    }]);
+    }];
+    saveDesignerHistory(next);
+    setPlaceholders(next);
     setContextMenu(null);
   };
 
@@ -816,7 +856,7 @@ const LayoutDesigner: React.FC = () => {
 
              const updateField = (field: 'x' | 'y' | 'width' | 'height', cmValue: number) => {
                 if (isNaN(cmValue)) return;
-                setPlaceholders(prev => prev.map(p => {
+                const next = placeholders.map(p => {
                    if (p.id !== selectedId) return p;
                    const newP = { ...p };
                    if (field === 'x') newP.x = (cmValue / spreadW) * 100;
@@ -830,13 +870,15 @@ const LayoutDesigner: React.FC = () => {
                    if (newP.y < 0) newP.y = 0;
                    if (newP.y + newP.height > 100) newP.y = 100 - newP.height;
                    return newP;
-                }));
+                });
+                saveDesignerHistory(next);
+                setPlaceholders(next);
              };
 
              const updateProportion = (prop: '1:1' | '3:2' | '2:3' | 'custom') => {
-                setPlaceholders(prev => prev.map(p => {
+                const next = placeholders.map(p => {
                    if (p.id !== selectedId) return p;
-                   if (prop === 'custom') return { ...p, proportionLock: 'custom' };
+                   if (prop === 'custom') return { ...p, proportionLock: 'custom' as const };
                    
                    const R = prop === '1:1' ? 1 : prop === '3:2' ? 1.5 : (2/3);
                    let newHeight = (p.width * spreadRatio) / R;
@@ -852,7 +894,9 @@ const LayoutDesigner: React.FC = () => {
                    }
                    
                    return { ...p, proportionLock: prop, height: newHeight, width: newWidth };
-                }));
+                });
+                saveDesignerHistory(next);
+                setPlaceholders(next);
              };
 
              return (
