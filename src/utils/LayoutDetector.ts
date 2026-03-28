@@ -76,10 +76,7 @@ function findRectangles(imageData: ImageData): Box[] {
   }
 
   // 2. Scan every single pixel for islands (Pixel-Perfect)
-  const step = 2; // Using 2 for performance even in high res, but 1 is also possible.
-                  // For 7200px, 2 is still very precise (0.02% error).
-                  // Let's use 2 for initial discovery to avoid excessive stalls.
-                  
+  const step = 2; // Using 2 for performance even in high res
   for (let y = 0; y < height; y += step) {
     for (let x = 0; x < width; x += step) {
       const idx = (y * width + x);
@@ -90,7 +87,7 @@ function findRectangles(imageData: ImageData): Box[] {
         // CONTENT FOUND!
         const box = growBox(x, y, width, height, data, visited, bgColor);
         
-        // Filter out tiny noise (less than ~2% of width/height)
+        // Filter out noise
         if (box && box.width > width * 0.02 && box.height > height * 0.02) {
           boxes.push(box);
         }
@@ -101,8 +98,17 @@ function findRectangles(imageData: ImageData): Box[] {
   // 3. Resolve Overlaps (NUNCA vai ter uma foto sobreposta)
   boxes = resolveOverlaps(boxes);
 
-  // 4. Precision Trimming
-  return boxes.map(box => trimToContent(box, width, height, data, bgColor));
+  // 4. Precision Trimming 
+  boxes = boxes.map(box => trimToContent(box, width, height, data, bgColor));
+
+  // 5. INTELLIGENT INTERNAL SPLIT (for touching photos)
+  const finalBoxes: Box[] = [];
+  for (const box of boxes) {
+    const splits = findInternalSplits(box, width, height, data);
+    finalBoxes.push(...splits);
+  }
+
+  return finalBoxes;
 }
 
 function isBackgroundColor(r: number, g: number, b: number, bgColor: number[]): boolean {
@@ -111,7 +117,7 @@ function isBackgroundColor(r: number, g: number, b: number, bgColor: number[]): 
     Math.pow(g - bgColor[1], 2) + 
     Math.pow(b - bgColor[2], 2)
   );
-  return dist < 45; // Generous distance for compression artifacts
+  return dist < 45; 
 }
 
 function growBox(startX: number, startY: number, width: number, height: number, data: Uint8ClampedArray, visited: Uint8Array, bgColor: number[]): Box | null {
@@ -120,14 +126,11 @@ function growBox(startX: number, startY: number, width: number, height: number, 
 
   const queue: [number, number][] = [[startX, startY]];
   visited[startY * width + startX] = 1;
-  
-  // This step MUST be 1 or 2 for high precision.
-  // We'll use 2 for speed, with a small look-ahead to bridge gaps.
   const step = 2;
-  const gapLookAhead = 8; // Bridge small bright gaps (pixels)
+  const gapLookAhead = 8; 
 
   let count = 0;
-  const maxPixels = 100000000; // NO LIMIT for large photos (up to 100M pixels)
+  const maxPixels = 100000000; 
 
   while (queue.length > 0 && count < maxPixels) {
     const [currX, currY] = queue.shift()!;
@@ -138,7 +141,6 @@ function growBox(startX: number, startY: number, width: number, height: number, 
     minY = Math.min(minY, currY);
     maxY = Math.max(maxY, currY);
 
-    // Check neighbors in 4 directions
     const neighbors = [[step, 0], [-step, 0], [0, step], [0, -step]];
     for (const [dx, dy] of neighbors) {
       const nx = currX + dx;
@@ -151,7 +153,6 @@ function growBox(startX: number, startY: number, width: number, height: number, 
         const pIdx = nIdx * 4;
         let isContent = !isBackgroundColor(data[pIdx], data[pIdx + 1], data[pIdx + 2], bgColor);
 
-        // Gap bridging logic
         if (!isContent) {
            for (let g = 1; g <= gapLookAhead; g += 2) {
               const lx = nx + (dx > 0 ? g : dx < 0 ? -g : 0);
@@ -179,20 +180,16 @@ function growBox(startX: number, startY: number, width: number, height: number, 
 function resolveOverlaps(boxes: Box[]): Box[] {
   let hasMerged = true;
   let currentBoxes = [...boxes];
-
   while (hasMerged) {
     hasMerged = false;
     const nextBoxes: Box[] = [];
     const usedIndices = new Set<number>();
-
     for (let i = 0; i < currentBoxes.length; i++) {
       if (usedIndices.has(i)) continue;
       let boxA = currentBoxes[i];
-
       for (let j = i + 1; j < currentBoxes.length; j++) {
         if (usedIndices.has(j)) continue;
         const boxB = currentBoxes[j];
-
         if (doOverlap(boxA, boxB)) {
           boxA = mergeBoxes(boxA, boxB);
           usedIndices.add(j);
@@ -208,57 +205,86 @@ function resolveOverlaps(boxes: Box[]): Box[] {
 }
 
 function doOverlap(a: Box, b: Box): boolean {
-  // Overlap check
-  return !(
-    b.x > a.x + a.width ||
-    b.x + b.width < a.x ||
-    b.y > a.y + a.height ||
-    b.y + b.height < a.y
-  );
+  return !(b.x > a.x + a.width || b.x + b.width < a.x || b.y > a.y + a.height || b.y + b.height < a.y);
 }
 
 function mergeBoxes(a: Box, b: Box): Box {
-  const minX = Math.min(a.x, b.x);
-  const minY = Math.min(a.y, b.y);
-  const maxX = Math.max(a.x + a.width, b.x + b.width);
-  const maxY = Math.max(a.y + a.height, b.y + b.height);
+  const minX = Math.min(a.x, b.x), minY = Math.min(a.y, b.y);
+  const maxX = Math.max(a.x + a.width, b.x + b.width), maxY = Math.max(a.y + a.height, b.y + b.height);
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
 }
 
 function trimToContent(box: Box, width: number, height: number, data: Uint8ClampedArray, bgColor: number[]): Box {
   let { x: minX, y: minY, width: w, height: h } = box;
-  let maxX = minX + w;
-  let maxY = minY + h;
-
+  let maxX = minX + w, maxY = minY + h;
   const isBg = (x: number, y: number) => {
     const i = (y * width + x) * 4;
     return isBackgroundColor(data[i], data[i+1], data[i+2], bgColor);
   };
-
-  while (minY < maxY) {
-    let content = false;
-    for (let x = minX; x <= maxX; x++) if (!isBg(x, minY)) { content = true; break; }
-    if (content) break; 
-    minY++;
-  }
-  while (maxY > minY) {
-    let content = false;
-    for (let x = minX; x <= maxX; x++) if (!isBg(x, maxY)) { content = true; break; }
-    if (content) break;
-    maxY--;
-  }
-  while (minX < maxX) {
-    let content = false;
-    for (let y = minY; y <= maxY; y++) if (!isBg(minX, y)) { content = true; break; }
-    if (content) break;
-    minX++;
-  }
-  while (maxX > minX) {
-    let content = false;
-    for (let y = minY; y <= maxY; y++) if (!isBg(maxX, y)) { content = true; break; }
-    if (content) break;
-    maxX--;
-  }
-
+  while (minY < maxY) { let content = false; for (let x = minX; x <= maxX; x++) if (!isBg(x, minY)) { content = true; break; } if (content) break; minY++; }
+  while (maxY > minY) { let content = false; for (let x = minX; x <= maxX; x++) if (!isBg(x, maxY)) { content = true; break; } if (content) break; maxY--; }
+  while (minX < maxX) { let content = false; for (let y = minY; y <= maxY; y++) if (!isBg(minX, y)) { content = true; break; } if (content) break; minX++; }
+  while (maxX > minX) { let content = false; for (let y = minY; y <= maxY; y++) if (!isBg(maxX, y)) { content = true; break; } if (content) break; maxX--; }
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+/**
+ * Intelligent Internal Split: Scans the box for hidden seams between touching photos.
+ */
+function findInternalSplits(box: Box, fullW: number, fullH: number, data: Uint8ClampedArray): Box[] {
+  // We'll calculate a gradient profile. A split is a vertical/horizontal line with a high consistent gradient.
+  const colGradients = new Float32Array(box.width);
+  const getIntensity = (x: number, y: number) => {
+     const i = (y * fullW + x) * 4;
+     return (data[i] + data[i+1] + data[i+2]) / 3;
+  };
+
+  // Vertical Seam Discovery
+  for (let x = box.x + 10; x < box.x + box.width - 10; x++) {
+     let sumD = 0;
+     for (let y = box.y; y < box.y + box.height; y++) {
+        sumD += Math.abs(getIntensity(x, y) - getIntensity(x + 1, y));
+     }
+     colGradients[x - box.x] = sumD / box.height;
+  }
+
+  // Look for a sharp peak that spans a large portion of the height
+  let bestX = -1, maxGrad = 0;
+  for (let i = 0; i < colGradients.length; i++) {
+     if (colGradients[i] > maxGrad) { maxGrad = colGradients[i]; bestX = box.x + i; }
+  }
+
+  // Threshold: The gradient must be significantly higher than the average texture
+  const avgGrad = colGradients.reduce((a, b) => a + b, 0) / colGradients.length;
+  if (bestX !== -1 && maxGrad > avgGrad * 4 && maxGrad > 20) {
+     // Validate seam consistency (is it a line or just a busy part of a photo?)
+     // If found, split and recurse
+     const boxL = { ...box, width: bestX - box.x };
+     const boxR = { ...box, x: bestX + 1, width: box.x + box.width - (bestX + 1) };
+     return [...findInternalSplits(boxL, fullW, fullH, data), ...findInternalSplits(boxR, fullW, fullH, data)];
+  }
+
+  // Horizontal Seam Discovery (Skip if already split vertically to keep it simple for now)
+  const rowGradients = new Float32Array(box.height);
+  for (let y = box.y + 10; y < box.y + box.height - 10; y++) {
+     let sumD = 0;
+     for (let x = box.x; x < box.x + box.width; x++) {
+        sumD += Math.abs(getIntensity(x, y) - getIntensity(x, y + 1));
+     }
+     rowGradients[y - box.y] = sumD / box.width;
+  }
+
+  let bestY = -1, maxRGrad = 0;
+  for (let i = 0; i < rowGradients.length; i++) {
+     if (rowGradients[i] > maxRGrad) { maxRGrad = rowGradients[i]; bestY = box.y + i; }
+  }
+
+  const avgRGrad = rowGradients.reduce((a, b) => a + b, 0) / rowGradients.length;
+  if (bestY !== -1 && maxRGrad > avgRGrad * 4 && maxRGrad > 20) {
+     const boxT = { ...box, height: bestY - box.y };
+     const boxB = { ...box, y: bestY + 1, height: box.y + box.height - (bestY + 1) };
+     return [...findInternalSplits(boxT, fullW, fullH, data), ...findInternalSplits(boxB, fullW, fullH, data)];
+  }
+
+  return [box];
 }
