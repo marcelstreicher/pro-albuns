@@ -163,6 +163,36 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
     showToast(`Layout: ${nextLayout.name} (${nextIndex + 1}/${matchingLayouts.length})`, 'info');
   }, [activeSpread, matchingLayouts, currentLayoutIndex, showToast]);
 
+  const handleSaveAsNewLayout = () => {
+    if (!activeSpread || !activeSpread.customPlaceholders) return;
+    
+    const newId = `custom_${Math.random().toString(36).substr(2, 9)}`;
+    const format = useProjectStore.getState().getProjectFormat();
+    
+    // Create the new layout template
+    const newLayout = {
+      id: newId,
+      name: `Layout Personalizado ${activeSpread.customPlaceholders.length} Fotos`,
+      photoCount: activeSpread.customPlaceholders.length,
+      placeholders: activeSpread.customPlaceholders.map(p => ({ ...p })),
+      format: format
+    };
+
+    // 1. Save globally
+    useProjectStore.getState().saveCustomLayout(newLayout);
+    
+    // 2. Update current spread to use this new template (and clear ad-hoc customs)
+    useProjectStore.setState(state => ({
+      spreads: state.spreads.map(s => 
+        s.id === activeSpread.id 
+          ? { ...s, layoutId: newId, customPlaceholders: undefined } 
+          : s
+      )
+    }));
+
+    showToast('Layout salvo como novo modelo!', 'success');
+  };
+
   // Resize Handlers
   const startResize = (e: React.MouseEvent, type: string, ph: any) => {
     e.preventDefault(); e.stopPropagation();
@@ -475,6 +505,28 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
           <span className="material-symbols-outlined">{activeSpread.isLocked ? 'lock' : 'lock_open'}</span>
         </button>
 
+        <button
+          onClick={(e) => { e.stopPropagation(); setIsSettingsOpen(true); }}
+          className="w-10 h-10 flex items-center justify-center rounded-full text-on-surface-variant hover:bg-surface-variant transition-colors"
+          title="Configurações do Editor"
+        >
+          <span className="material-symbols-outlined text-lg">settings</span>
+        </button>
+
+        {activeSpread.customPlaceholders && activeSpread.customPlaceholders.length > 0 && (
+          <>
+            <div className="w-px h-6 bg-outline-variant/40 mx-1"></div>
+            <button
+              onClick={(e) => { e.stopPropagation(); handleSaveAsNewLayout(); }}
+              className="px-4 h-9 flex items-center gap-2 rounded-full bg-[#FFD700] text-black shadow-lg hover:brightness-110 active:scale-95 transition-all text-[11px] font-bold uppercase tracking-wider mx-1 border border-black/5"
+              title="Salvar este layout como um novo modelo para reuso"
+            >
+              <span className="material-symbols-outlined text-[18px] fill-current">save_as</span>
+              Salvar como Modelo
+            </button>
+          </>
+        )}
+
         {!activeSpread.isLocked && matchingLayouts.length > 0 && (
           <>
             <div className="w-px h-6 bg-outline-variant/40 mx-1"></div>
@@ -549,7 +601,7 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
           </div>
         )}
 
-        {!layout && (
+        {(!layout && (!activeSpread.customPlaceholders || activeSpread.customPlaceholders.length === 0)) && (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-outline-variant/50 pointer-events-none z-0 border-2 border-dashed border-outline-variant/20 m-8 rounded-xl">
             <span className="material-symbols-outlined text-6xl mb-4">add_photo_alternate</span>
             <p className="font-headline tracking-widest uppercase text-sm font-bold">Arraste fotos para esta lâmina</p>
@@ -712,16 +764,6 @@ const Canvas: React.FC<CanvasProps> = ({ selectedPlaceholder, onSelectPlaceholde
           title="Resetar Zoom (100%)"
         >
           {(canvasZoom * 100).toFixed(0)}%
-        </button>
-
-        <div className="w-px h-6 bg-outline-variant/30 mx-1"></div>
-
-        <button
-          onClick={(e) => { e.stopPropagation(); setIsSettingsOpen(true); }}
-          className="w-10 h-10 flex items-center justify-center rounded-full text-on-surface-variant hover:bg-surface-variant transition-colors"
-          title="Configurações do Editor"
-        >
-          <span className="material-symbols-outlined text-lg">settings</span>
         </button>
       </div>
     </div>

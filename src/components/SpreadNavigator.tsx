@@ -144,21 +144,27 @@ const SpreadNavigator: React.FC = () => {
               `}>
                 
                 {/* Mini Layout Preview */}
-                {layout ? (
-                  <div className="absolute inset-0 p-1">
-                    {layout.placeholders.map(ph => (
-                      <div
-                        key={ph.id}
-                        className={`absolute rounded-[0.5px] border border-white/10 ${spread.images[ph.id] ? 'bg-primary/40' : 'bg-outline-variant/20'}`}
-                        style={{ left: `${ph.x}%`, top: `${ph.y}%`, width: `${ph.width}%`, height: `${ph.height}%` }}
-                      />
-                    ))}
-                  </div>
-                ) : (
-                  <div className="absolute inset-0 flex items-center justify-center opacity-10">
-                    <span className="material-symbols-outlined text-xl">auto_awesome_mosaic</span>
-                  </div>
-                )}
+                {(() => {
+                  const currentPlaceholders = spread.customPlaceholders || layout?.placeholders;
+                  if (currentPlaceholders && currentPlaceholders.length > 0) {
+                    return (
+                      <div className="absolute inset-0 p-1">
+                        {currentPlaceholders.map(ph => (
+                          <div
+                            key={ph.id}
+                            className={`absolute rounded-[0.5px] border border-white/10 ${spread.images[ph.id] ? 'bg-primary/40' : 'bg-outline-variant/20'}`}
+                            style={{ left: `${ph.x}%`, top: `${ph.y}%`, width: `${ph.width}%`, height: `${ph.height}%` }}
+                          />
+                        ))}
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="absolute inset-0 flex items-center justify-center opacity-10">
+                      <span className="material-symbols-outlined text-xl">auto_awesome_mosaic</span>
+                    </div>
+                  );
+                })()}
 
                 {/* Spread Number Overlay */}
                 <div className={`absolute bottom-1 right-1 px-1.5 py-0.5 rounded text-[8px] font-bold ${isActive ? 'bg-primary text-on-primary' : 'bg-surface-container-highest text-on-surface-variant'}`}>
