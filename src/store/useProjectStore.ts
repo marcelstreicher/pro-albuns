@@ -43,6 +43,11 @@ export interface AlbumConfig {
   autoLayoutOnRemove?: boolean;
 }
 
+export interface ApiSettings {
+  endpoint: string;
+  token: string;
+}
+
 export interface Spread {
   id: string;
   layoutId: string; 
@@ -144,6 +149,10 @@ interface ProjectState {
   addAlbumTemplate: (template: Omit<AlbumTemplate, 'id'>) => void;
   updateAlbumTemplate: (id: string, template: Partial<AlbumTemplate>) => void;
   deleteAlbumTemplate: (id: string) => void;
+
+  // API Sync Settings
+  apiSettings: ApiSettings;
+  updateApiSettings: (settings: Partial<ApiSettings>) => void;
 }
 
 const DEFAULT_CONFIG: AlbumConfig = {
@@ -184,6 +193,11 @@ export const useProjectStore = create<ProjectState>()(
         
         binderies: [] as Bindery[],
         albumTemplates: [] as AlbumTemplate[],
+
+        apiSettings: { endpoint: '', token: '' } as ApiSettings,
+        updateApiSettings: (settings) => set((state) => ({ 
+          apiSettings: { ...state.apiSettings, ...settings } 
+        })),
 
         layoutDesignerPendingCount: null as number | null,
         pendingDraftPhotos: null as { spreadId: string, photos: MediaItem[] } | null,

@@ -71,3 +71,16 @@ ipcMain.handle('save-file', async (_event, filePath: string, base64Data: string)
     return false
   }
 })
+
+ipcMain.handle('download-media', async (_event, url: string, destPath: string) => {
+  try {
+    const response = await fetch(url)
+    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`)
+    const buffer = await response.arrayBuffer()
+    await fs.promises.writeFile(destPath, Buffer.from(buffer))
+    return true
+  } catch (error) {
+    console.error('Failed to download media:', error)
+    return false
+  }
+})

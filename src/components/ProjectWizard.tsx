@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useProjectStore, type MediaItem, type AlbumConfig } from '../store/useProjectStore';
+import { fetchOnlineProjects, fetchProjectPhotos, importOnlineMedia, type OnlineProject } from '../utils/onlineSync';
 
 interface ProjectWizardProps {
   onClose: () => void;
@@ -26,6 +27,14 @@ const ProjectWizard: React.FC<ProjectWizardProps> = ({ onClose }) => {
   const [initialPhotos, setInitialPhotos] = useState<MediaItem[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  // Online Import States
+  const { apiSettings, showToast } = useProjectStore();
+  const [showImportView, setShowImportView] = useState(false);
+  const [onlineProjects, setOnlineProjects] = useState<OnlineProject[]>([]);
+  const [isFetching, setIsFetching] = useState(false);
+  const [filterPhysical, setFilterPhysical] = useState(true);
+  const [downloadProgress, setDownloadProgress] = useState<{ completed: number, total: number } | null>(null);
 
   const availableTemplates = albumTemplates.filter(t => t.binderyId === selectedBinderyId);
 
@@ -68,7 +77,7 @@ const ProjectWizard: React.FC<ProjectWizardProps> = ({ onClose }) => {
           aspect: 'H' // Default, will be refined in the store/editor
         };
       });
-    setInitialPhotos(prev => [...prev, ...newPhotos]);
+    setInitialPhotos((prev: MediaItem[]) => [...prev, ...newPhotos]);
   };
 
   const handleNativeSelect = async () => {
@@ -76,7 +85,7 @@ const ProjectWizard: React.FC<ProjectWizardProps> = ({ onClose }) => {
       const selected = await window.electronAPI.selectFiles();
       if (selected && selected.length > 0) {
         const newPhotos = selected.map(path => ({ path, aspect: 'H' as const }));
-        setInitialPhotos(prev => [...prev, ...newPhotos]);
+        setInitialPhotos((prev: MediaItem[]) => [...prev, ...newPhotos]);
       }
     } else {
       fileInputRef.current?.click();
@@ -94,7 +103,7 @@ const ProjectWizard: React.FC<ProjectWizardProps> = ({ onClose }) => {
   };
 
   const nextStep = () => {
-    if (currentStep < steps.length - 1) setCurrentStep(s => s + 1);
+    if (currentStep < steps.length - 1) setCurrentStep((s: number) => s + 1);
     else handleFinish();
   };
 
@@ -133,7 +142,7 @@ const ProjectWizard: React.FC<ProjectWizardProps> = ({ onClose }) => {
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-8 flex flex-col items-center justify-center text-center">
           
-          {currentStep === 0 && (
+          {currentStep === 0 && !showImportView && (
             <div className="w-full max-w-sm space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
               <div className="w-20 h-20 bg-primary/10 rounded-3xl flex items-center justify-center mx-auto mb-4">
                 <span className="material-symbols-outlined text-4xl text-primary font-light">draw</span>
@@ -147,6 +156,151 @@ const ProjectWizard: React.FC<ProjectWizardProps> = ({ onClose }) => {
                 onChange={(e) => setName(e.target.value)}
                 className="w-full bg-surface-container p-4 rounded-xl border border-outline-variant/30 outline-none focus:border-primary text-lg text-on-surface transition-all text-center"
               />
+
+              <div className="pt-4 border-t border-outline-variant/10">
+                <button
+                  onClick={async () => {
+                    if (!apiSettings.endpoint || !apiSettings.token) {
+                      showToast('Configure a conexão online no Dashboard primeiro.', 'warning');
+                      return;
+                    }
+                    setIsFetching(true);
+                    try {
+                      const projs = await fetchOnlineProjects(apiSettings.endpoint, apiSettings.token);
+                      setOnlineProjects(projs);
+                      setShowImportView(true);
+                    } catch (e) {
+                      showToast('Erro ao conectar ao sistema online.', 'warning');
+                    } finally {
+                      setIsFetching(false);
+                    }
+                  }}
+                  disabled={isFetching}
+                  className="w-full py-4 bg-surface-container-high border border-outline-variant/30 rounded-xl text-primary font-bold uppercase tracking-widest text-[10px] hover:bg-surface-bright transition-all flex items-center justify-center gap-3 group"
+                >
+                  <span className={`material-symbols-outlined text-lg ${isFetching ? 'animate-spin' : 'group-hover:scale-110 transition-transform'}`}>
+                    {isFetching ? 'sync' : 'cloud_download'}
+                  </span>
+                  {isFetching ? 'Conectando...' : 'Importar do Sistema Online'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {currentStep === 0 && showImportView && (
+            <div className="w-full space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-left">
+                  <h3 className="text-xl font-headline font-bold text-on-surface">Selecione o Projeto Online</h3>
+                  <p className="text-xs text-on-surface-variant">Listando projetos ativos no seu sistema</p>
+                </div>
+                <button 
+                  onClick={() => setShowImportView(false)}
+                  className="px-4 py-2 text-[10px] font-bold text-on-surface-variant uppercase tracking-widest hover:bg-surface-variant rounded-lg"
+                >
+                  Cancelar
+                </button>
+              </div>
+
+                <label className="flex items-center gap-4 bg-surface-container/50 p-4 rounded-xl border border-outline-variant/10">
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    checked={filterPhysical} 
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFilterPhysical(e.target.checked)}
+                    className="w-4 h-4 accent-primary"
+                  />
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Apenas com Álbum Físico criado</span>
+                </label>
+              </label>
+
+              <div className="grid grid-cols-1 gap-2 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+                {onlineProjects
+                  .filter((p: OnlineProject) => !filterPhysical || p.hasPhysicalAlbum)
+                  .map((p: OnlineProject) => (
+                    <button
+                      key={p.id}
+                      onClick={async () => {
+                        const dest = await window.electronAPI.selectDirectory();
+                        if (!dest) return;
+
+                        setIsFetching(true);
+                        try {
+                          const photos = await fetchProjectPhotos(apiSettings.endpoint, apiSettings.token, p.id);
+                          if (photos.length === 0) {
+                            showToast('Este projeto não possui fotos para importar.', 'info');
+                            return;
+                          }
+
+                          const downloaded = await importOnlineMedia(photos, dest, (prog) => {
+                            setDownloadProgress(prog);
+                          });
+
+                          setName(p.name);
+                          setInitialPhotos(downloaded);
+                          setShowImportView(false);
+                          setCurrentStep(1); // Pular para configuração de saída
+                          showToast(`Importação de "${p.name}" concluída!`, 'success');
+                        } catch (e) {
+                          showToast('Erro ao importar projeto online.', 'warning');
+                        } finally {
+                          setIsFetching(false);
+                          setDownloadProgress(null);
+                        }
+                      }}
+                      className="group flex items-center justify-between p-4 bg-surface-container hover:bg-surface-container-highest border border-outline-variant/20 hover:border-primary/40 rounded-xl transition-all text-left"
+                    >
+                      <div>
+                        <div className="text-sm font-bold text-on-surface group-hover:text-primary transition-colors">{p.name}</div>
+                        <div className="text-[10px] text-on-surface-variant flex items-center gap-2 mt-1">
+                          <span className="material-symbols-outlined text-[12px]">id_card</span> {p.id}
+                          {p.hasPhysicalAlbum && (
+                            <>
+                              <span className="w-1 h-1 bg-outline-variant/40 rounded-full"></span>
+                              <span className="text-primary font-bold">ÁLBUM CRIADO</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <span className="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-all group-hover:translate-x-1">chevron_right</span>
+                    </button>
+                  ))}
+                  
+                {onlineProjects.filter((p: OnlineProject) => !filterPhysical || p.hasPhysicalAlbum).length === 0 && (
+                  <div className="py-12 text-center opacity-40">
+                    <span className="material-symbols-outlined text-4xl mb-2">search_off</span>
+                    <p className="text-xs uppercase font-bold tracking-widest">Nenhum projeto encontrado</p>
+                  </div>
+                )}
+              </div>
+
+              {downloadProgress && (
+                <div className="absolute inset-0 z-50 bg-surface-container-highest/95 backdrop-blur flex flex-col items-center justify-center p-12 text-center rounded-2xl animate-in fade-in duration-300">
+                  <div className="w-24 h-24 relative mb-6">
+                    <svg className="w-full h-full" viewBox="0 0 100 100">
+                      <circle className="text-outline-variant/20 stroke-current" strokeWidth="8" fill="transparent" r="40" cx="50" cy="50" />
+                      <circle 
+                        className="text-primary stroke-current transition-all duration-300" 
+                        strokeWidth="8" 
+                        strokeLinecap="round" 
+                        fill="transparent" 
+                        r="40" cx="50" cy="50" 
+                        style={{ 
+                          strokeDasharray: '251.2', 
+                          strokeDashoffset: 251.2 - (251.2 * (downloadProgress.completed / downloadProgress.total)) 
+                        }} 
+                      />
+                    </svg>
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <span className="text-xl font-headline font-bold text-primary">{Math.round((downloadProgress.completed / downloadProgress.total) * 100)}%</span>
+                    </div>
+                  </div>
+                  <h4 className="text-lg font-headline font-bold text-on-surface">Baixando Fotografias...</h4>
+                  <p className="text-xs text-on-surface-variant mt-2 uppercase tracking-widest font-bold">
+                    {downloadProgress.completed} de {downloadProgress.total} baixadas
+                  </p>
+                </div>
+              )}
             </div>
           )}
 
@@ -225,7 +379,7 @@ const ProjectWizard: React.FC<ProjectWizardProps> = ({ onClose }) => {
               
               <div className="flex items-center justify-center gap-8 mt-6">
                 <button 
-                  onClick={() => setNumPages(p => Math.max(20, p - 2))}
+                  onClick={() => setNumPages((p: number) => Math.max(20, p - 2))}
                   className="w-12 h-12 rounded-full border border-outline-variant/30 flex items-center justify-center hover:bg-surface-variant text-on-surface transition-all"
                 >
                   <span className="material-symbols-outlined">remove</span>
@@ -235,7 +389,7 @@ const ProjectWizard: React.FC<ProjectWizardProps> = ({ onClose }) => {
                   <span className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant mt-1">Páginas</span>
                 </div>
                 <button 
-                  onClick={() => setNumPages(p => Math.min(100, p + 2))}
+                  onClick={() => setNumPages((p: number) => Math.min(100, p + 2))}
                   className="w-12 h-12 rounded-full border border-outline-variant/30 flex items-center justify-center hover:bg-surface-variant text-on-surface transition-all"
                 >
                   <span className="material-symbols-outlined">add</span>
@@ -308,7 +462,7 @@ const ProjectWizard: React.FC<ProjectWizardProps> = ({ onClose }) => {
         {/* Footer */}
         <div className="px-8 py-6 bg-surface-container flex justify-between items-center border-t border-outline-variant/10">
           <button
-            onClick={() => setCurrentStep(s => s - 1)}
+            onClick={() => setCurrentStep((s: number) => s - 1)}
             disabled={currentStep === 0}
             className={`px-6 py-3 rounded-xl font-bold uppercase tracking-widest text-[11px] transition-all ${
               currentStep === 0 ? 'opacity-0 pointer-events-none' : 'text-on-surface-variant hover:bg-surface-variant'

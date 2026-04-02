@@ -2,11 +2,13 @@ import React, { useState } from 'react';
 import ProjectWizard from './ProjectWizard';
 import PageManager from './PageManager';
 import ConfirmDialog from './ConfirmDialog';
+import ConnectionSettingsModal from './ConnectionSettingsModal';
 import { useProjectStore } from '../store/useProjectStore';
 
 const Dashboard: React.FC = () => {
   const [showWizard, setShowWizard] = useState(false);
   const [showPageManager, setShowPageManager] = useState(false);
+  const [showConnectionSettings, setShowConnectionSettings] = useState(false);
   const [projectToDelete, setProjectToDelete] = useState<string | null>(null);
   const { projects, loadProject, deleteProjectById } = useProjectStore();
 
@@ -25,6 +27,7 @@ const Dashboard: React.FC = () => {
     <main className="flex-1 bg-surface-dim p-8 md:p-12 overflow-y-auto">
       {showWizard && <ProjectWizard onClose={() => setShowWizard(false)} />}
       {showPageManager && <PageManager onClose={() => setShowPageManager(false)} />}
+      <ConnectionSettingsModal isOpen={showConnectionSettings} onClose={() => setShowConnectionSettings(false)} />
       
       <ConfirmDialog
         isOpen={!!projectToDelete}
@@ -48,6 +51,13 @@ const Dashboard: React.FC = () => {
           </p>
         </div>
         <div className="flex gap-4">
+          <button 
+            onClick={() => setShowConnectionSettings(true)}
+            className="px-8 py-4 bg-surface-container-high border border-outline-variant/30 text-on-surface font-headline font-bold uppercase tracking-widest text-[10px] hover:bg-surface-bright transition-all flex items-center gap-2"
+          >
+            <span className="material-symbols-outlined text-sm">hub</span>
+            Conexão
+          </button>
           <button 
             onClick={() => setShowPageManager(true)}
             className="px-8 py-4 bg-surface-container-high border border-outline-variant/30 text-on-surface font-headline font-bold uppercase tracking-widest text-[10px] hover:bg-surface-bright transition-all flex items-center gap-2"
